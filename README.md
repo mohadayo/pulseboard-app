@@ -67,8 +67,13 @@ make down
 | `GET` | `/health` | Health check |
 | `POST` | `/api/v1/metrics` | Record a metric |
 | `GET` | `/api/v1/metrics` | List all metrics (optional `?name=` filter) |
+| `GET` | `/api/v1/metrics/{name}` | Get all entries for a metric |
 | `GET` | `/api/v1/metrics/{name}/latest` | Get latest value for a metric |
 | `DELETE` | `/api/v1/metrics/{name}` | Delete all entries for a metric |
+
+The in-memory store is bounded per metric name via `MAX_METRICS_PER_NAME`
+(default `1000`). When the limit is exceeded, the oldest entries are evicted
+in FIFO order. Set the variable to `0` to disable the cap.
 
 **Create a metric:**
 
@@ -92,6 +97,9 @@ curl -X POST http://localhost:8001/api/v1/aggregate \
   -H "Content-Type: application/json" \
   -d '{"values": [10, 20, 30, 40, 50]}'
 ```
+
+The response includes `count`, `sum`, `avg`, `min`, `max`, `std_dev`,
+`median`, `p95`, and `p99` (percentiles are computed via linear interpolation).
 
 ### Dashboard BFF (`:8002`)
 
