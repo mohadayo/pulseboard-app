@@ -14,7 +14,29 @@ logger = logging.getLogger("api-gateway")
 
 app = FastAPI(title="PulseBoard API Gateway", version="1.0.0")
 
+
+def _parse_max_metrics() -> int:
+    raw = os.getenv("MAX_METRICS_PER_NAME", "1000")
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid MAX_METRICS_PER_NAME=%r, falling back to 1000", raw)
+        return 1000
+    return value if value > 0 else 0
+
+
+# 1 メトリクス名あたりの最大保持件数。0 以下なら無制限。
+MAX_METRICS_PER_NAME = _parse_max_metrics()
+
 metrics_store: dict[str, list[dict]] = {}
+# 累積シーケンス（FIFO で古い記録を破棄しても ID が衝突しないよう、別カウンタで管理）
+metrics_seq: dict[str, int] = {}
+
+
+def _reset_state() -> None:
+    """テスト用：内部状態を初期化する。"""
+    metrics_store.clear()
+    metrics_seq.clear()
 
 
 class MetricPayload(BaseModel):
@@ -40,7 +62,9 @@ def health():
 @app.post("/api/v1/metrics", status_code=201)
 def create_metric(payload: MetricPayload):
     now = datetime.now(timezone.utc).isoformat()
-    metric_id = f"{payload.name}-{len(metrics_store.get(payload.name, []))}"
+    seq = metrics_seq.get(payload.name, 0)
+    metric_id = f"{payload.name}-{seq}"
+    metrics_seq[payload.name] = seq + 1
     record = {
         "id": metric_id,
         "name": payload.name,
@@ -48,7 +72,17 @@ def create_metric(payload: MetricPayload):
         "tags": payload.tags,
         "recorded_at": now,
     }
-    metrics_store.setdefault(payload.name, []).append(record)
+    entries = metrics_store.setdefault(payload.name, [])
+    entries.append(record)
+
+    if MAX_METRICS_PER_NAME > 0 and len(entries) > MAX_METRICS_PER_NAME:
+        overflow = len(entries) - MAX_METRICS_PER_NAME
+        del entries[:overflow]
+        logger.info(
+            "Evicted %d old metric(s) for '%s' (cap=%d)",
+            overflow, payload.name, MAX_METRICS_PER_NAME,
+        )
+
     logger.info("Metric recorded: %s = %s", payload.name, payload.value)
     return MetricResponse(**record)
 
@@ -72,10 +106,21 @@ def get_latest_metric(metric_name: str):
     return entries[-1]
 
 
+@app.get("/api/v1/metrics/{metric_name}")
+def get_metrics_by_name(metric_name: str):
+    entries = metrics_store.get(metric_name)
+    if not entries:
+        logger.warning("Metric not found: %s", metric_name)
+        raise HTTPException(status_code=404, detail=f"No metrics found for '{metric_name}'")
+    logger.info("Returned %d metric(s) for '%s'", len(entries), metric_name)
+    return {"name": metric_name, "metrics": list(entries), "count": len(entries)}
+
+
 @app.delete("/api/v1/metrics/{metric_name}")
 def delete_metrics(metric_name: str):
     if metric_name not in metrics_store:
         raise HTTPException(status_code=404, detail=f"No metrics found for '{metric_name}'")
     count = len(metrics_store.pop(metric_name))
+    metrics_seq.pop(metric_name, None)
     logger.info("Deleted %d metrics for '%s'", count, metric_name)
     return {"deleted": count, "name": metric_name}
