@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"sort"
 	"sync"
 	"time"
 )
@@ -21,6 +22,9 @@ type AggregateResponse struct {
 	Min    float64 `json:"min"`
 	Max    float64 `json:"max"`
 	StdDev float64 `json:"std_dev"`
+	Median float64 `json:"median"`
+	P95    float64 `json:"p95"`
+	P99    float64 `json:"p99"`
 }
 
 type HealthResponse struct {
@@ -78,6 +82,26 @@ func aggregateHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
+// percentile は昇順ソート済みの values から、線形補間による pct パーセンタイル値を返す。
+// pct は 0〜100 の範囲。空スライスの場合は 0 を返す。
+func percentile(sorted []float64, pct float64) float64 {
+	n := len(sorted)
+	if n == 0 {
+		return 0
+	}
+	if n == 1 {
+		return sorted[0]
+	}
+	rank := (pct / 100.0) * float64(n-1)
+	lower := int(math.Floor(rank))
+	upper := int(math.Ceil(rank))
+	if lower == upper {
+		return sorted[lower]
+	}
+	weight := rank - float64(lower)
+	return sorted[lower]*(1-weight) + sorted[upper]*weight
+}
+
 func computeAggregate(values []float64) AggregateResponse {
 	n := len(values)
 	sum := 0.0
@@ -104,6 +128,10 @@ func computeAggregate(values []float64) AggregateResponse {
 	variance /= float64(n)
 	stdDev := math.Sqrt(variance)
 
+	sorted := make([]float64, n)
+	copy(sorted, values)
+	sort.Float64s(sorted)
+
 	return AggregateResponse{
 		Count:  n,
 		Sum:    sum,
@@ -111,6 +139,9 @@ func computeAggregate(values []float64) AggregateResponse {
 		Min:    minVal,
 		Max:    maxVal,
 		StdDev: stdDev,
+		Median: percentile(sorted, 50),
+		P95:    percentile(sorted, 95),
+		P99:    percentile(sorted, 99),
 	}
 }
 
