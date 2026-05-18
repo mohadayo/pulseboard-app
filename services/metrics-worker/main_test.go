@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestHealthHandler(t *testing.T) {
@@ -223,5 +224,126 @@ func TestAggregateHandlerIncludesNewFields(t *testing.T) {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("response JSON missing key %q", key)
 		}
+	}
+}
+
+// 大量の values を含む POST は 413 で拒否されることを検証。
+// values 配列が `maxAggregateValues` を超えた場合のガード。
+func TestAggregateHandlerRejectsTooManyValues(t *testing.T) {
+	orig := maxAggregateValues
+	maxAggregateValues = 3
+	defer func() { maxAggregateValues = orig }()
+
+	body, _ := json.Marshal(AggregateRequest{Values: []float64{1, 2, 3, 4}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/aggregate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	aggregateHandler(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", w.Code)
+	}
+}
+
+// 境界値: ちょうど maxAggregateValues 件は OK。
+func TestAggregateHandlerAcceptsExactlyMaxValues(t *testing.T) {
+	orig := maxAggregateValues
+	maxAggregateValues = 3
+	defer func() { maxAggregateValues = orig }()
+
+	body, _ := json.Marshal(AggregateRequest{Values: []float64{1, 2, 3}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/aggregate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	aggregateHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+// リクエストボディ全体が maxAggregateBodyBytes を超えた場合 413 を返す。
+func TestAggregateHandlerRejectsOversizedBody(t *testing.T) {
+	orig := maxAggregateBodyBytes
+	maxAggregateBodyBytes = 32 // バイト単位で意図的に小さくする
+	defer func() { maxAggregateBodyBytes = orig }()
+
+	// 32 バイトを確実に超えるペイロード
+	body, _ := json.Marshal(AggregateRequest{Values: []float64{
+		1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+	}})
+	if len(body) <= 32 {
+		t.Fatalf("test setup error: body must exceed 32 bytes, got %d", len(body))
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/aggregate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	aggregateHandler(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for oversized body, got %d", w.Code)
+	}
+}
+
+// 設定値が <= 0 のときガードが無効化されることを確認。
+func TestAggregateHandlerNoLimitWhenZero(t *testing.T) {
+	origValues := maxAggregateValues
+	origBody := maxAggregateBodyBytes
+	maxAggregateValues = 0       // 件数ガード無効
+	maxAggregateBodyBytes = 0    // ボディサイズガード無効
+	defer func() {
+		maxAggregateValues = origValues
+		maxAggregateBodyBytes = origBody
+	}()
+
+	body, _ := json.Marshal(AggregateRequest{Values: []float64{1, 2, 3, 4, 5}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/aggregate", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	aggregateHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 when limits are 0, got %d", w.Code)
+	}
+}
+
+func TestEnvSecondsFallback(t *testing.T) {
+	got := envSeconds("WORKER_DEFINITELY_UNSET_TIMEOUT", 9*time.Second)
+	if got != 9*time.Second {
+		t.Errorf("expected 9s fallback, got %v", got)
+	}
+}
+
+func TestEnvSecondsOverride(t *testing.T) {
+	t.Setenv("WORKER_TEST_TIMEOUT", "11")
+	got := envSeconds("WORKER_TEST_TIMEOUT", 5*time.Second)
+	if got != 11*time.Second {
+		t.Errorf("expected 11s, got %v", got)
+	}
+}
+
+func TestEnvSecondsInvalidUsesFallback(t *testing.T) {
+	t.Setenv("WORKER_BAD_TIMEOUT", "abc")
+	if got := envSeconds("WORKER_BAD_TIMEOUT", 4*time.Second); got != 4*time.Second {
+		t.Errorf("expected 4s fallback for invalid value, got %v", got)
+	}
+	t.Setenv("WORKER_NEG_TIMEOUT", "-1")
+	if got := envSeconds("WORKER_NEG_TIMEOUT", 4*time.Second); got != 4*time.Second {
+		t.Errorf("expected 4s fallback for negative value, got %v", got)
+	}
+}
+
+func TestEnvIntFallback(t *testing.T) {
+	if got := envInt("WORKER_DEFINITELY_UNSET_INT", 42); got != 42 {
+		t.Errorf("expected 42 fallback, got %d", got)
+	}
+}
+
+func TestEnvIntOverride(t *testing.T) {
+	t.Setenv("WORKER_TEST_INT", "1234")
+	if got := envInt("WORKER_TEST_INT", 0); got != 1234 {
+		t.Errorf("expected 1234, got %d", got)
 	}
 }
