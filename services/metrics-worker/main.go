@@ -2,11 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"math"
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -34,10 +36,45 @@ type HealthResponse struct {
 }
 
 var (
-	logger    = log.New(os.Stdout, "[metrics-worker] ", log.LstdFlags)
-	jobCount  int
-	jobMu     sync.Mutex
+	logger   = log.New(os.Stdout, "[metrics-worker] ", log.LstdFlags)
+	jobCount int
+	jobMu    sync.Mutex
+
+	// /api/v1/aggregate のリクエストボディ全体に対するサイズ上限（バイト）。
+	// 0 以下なら無制限（テスト等での明示無効化用）。
+	maxAggregateBodyBytes int64 = 1 << 20 // 1 MiB
+
+	// /api/v1/aggregate の values 配列の要素数上限。
+	// 0 以下なら無制限。
+	maxAggregateValues = 10000
 )
+
+func init() {
+	if v := envInt("MAX_AGGREGATE_BODY_BYTES", -1); v >= 0 {
+		maxAggregateBodyBytes = int64(v)
+	}
+	if v := envInt("MAX_AGGREGATE_VALUES", -1); v >= 0 {
+		maxAggregateValues = v
+	}
+}
+
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func envSeconds(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return fallback
+}
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	logger.Println("Health check requested")
@@ -56,8 +93,20 @@ func aggregateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// リクエストボディ全体に対する上限。
+	// JSON デコード前に上限を超えればここで打ち切られ、追加メモリを確保しない。
+	if maxAggregateBodyBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxAggregateBodyBytes)
+	}
+
 	var req AggregateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			logger.Printf("Request body too large: %d > %d", mbe.Limit, maxAggregateBodyBytes)
+			http.Error(w, `{"error":"request body too large"}`, http.StatusRequestEntityTooLarge)
+			return
+		}
 		logger.Printf("Invalid request body: %v", err)
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
@@ -66,6 +115,15 @@ func aggregateHandler(w http.ResponseWriter, r *http.Request) {
 	if len(req.Values) == 0 {
 		logger.Println("Empty values array received")
 		http.Error(w, `{"error":"values array must not be empty"}`, http.StatusBadRequest)
+		return
+	}
+
+	if maxAggregateValues > 0 && len(req.Values) > maxAggregateValues {
+		logger.Printf(
+			"Too many values: %d > %d",
+			len(req.Values), maxAggregateValues,
+		)
+		http.Error(w, `{"error":"values array too large"}`, http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -155,8 +213,17 @@ func main() {
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/api/v1/aggregate", aggregateHandler)
 
+	srv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           mux,
+		ReadHeaderTimeout: envSeconds("WORKER_READ_HEADER_TIMEOUT", 5*time.Second),
+		ReadTimeout:       envSeconds("WORKER_READ_TIMEOUT", 15*time.Second),
+		WriteTimeout:      envSeconds("WORKER_WRITE_TIMEOUT", 15*time.Second),
+		IdleTimeout:       envSeconds("WORKER_IDLE_TIMEOUT", 60*time.Second),
+	}
+
 	logger.Printf("Starting metrics-worker on port %s", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	if err := srv.ListenAndServe(); err != nil {
 		logger.Fatalf("Server failed: %v", err)
 	}
 }
