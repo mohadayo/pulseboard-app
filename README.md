@@ -101,6 +101,16 @@ curl -X POST http://localhost:8001/api/v1/aggregate \
 The response includes `count`, `sum`, `avg`, `min`, `max`, `std_dev`,
 `median`, `p95`, and `p99` (percentiles are computed via linear interpolation).
 
+**Hardening / DoS 対策:**
+
+- リクエストボディ全体は `MAX_AGGREGATE_BODY_BYTES`（既定 `1048576` = 1 MiB）を超えると
+  `413 Request Entity Too Large` で拒否される。
+- `values` 配列の要素数は `MAX_AGGREGATE_VALUES`（既定 `10000`）を超えると `413` で拒否される。
+- HTTP サーバには `WORKER_READ_HEADER_TIMEOUT`（既定 `5` 秒）、`WORKER_READ_TIMEOUT`（既定 `15` 秒）、
+  `WORKER_WRITE_TIMEOUT`（既定 `15` 秒）、`WORKER_IDLE_TIMEOUT`（既定 `60` 秒）が設定される
+  （Slowloris 等の遅延接続攻撃対策）。
+- いずれの上限も値を `0` 以下に設定すると無効化できる（テスト用途）。
+
 ### Dashboard BFF (`:8002`)
 
 | Method | Endpoint | Description |
