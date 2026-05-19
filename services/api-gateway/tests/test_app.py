@@ -1,4 +1,5 @@
 import importlib
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.testclient import TestClient
 
@@ -169,3 +170,86 @@ def test_metric_ids_are_unique_across_evictions(monkeypatch):
 
     monkeypatch.delenv("MAX_METRICS_PER_NAME", raising=False)
     importlib.reload(app_module)
+
+
+def test_concurrent_post_assigns_unique_ids():
+    """複数スレッドが同一 name へ並行 POST しても ID が一意であることを確認。
+
+    FastAPI は def ハンドラをスレッドプールで実行するため、_store_lock が
+    無いと `seq` の read-modify-write がレースし、ID が重複しうる。
+    """
+    total = 200
+
+    def post_one(i: int) -> str:
+        resp = client.post("/api/v1/metrics", json={"name": "race", "value": i})
+        assert resp.status_code == 201, resp.text
+        return resp.json()["id"]
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        ids = list(pool.map(post_one, range(total)))
+
+    assert len(ids) == total
+    assert len(set(ids)) == total, f"duplicate id detected: {len(ids) - len(set(ids))} dup"
+
+    # 投入順序に関わらず ID は 0..total-1 のセットになっている
+    suffixes = sorted(int(i.rsplit("-", 1)[1]) for i in ids)
+    assert suffixes == list(range(total))
+
+
+def test_concurrent_post_respects_max_per_name(monkeypatch):
+    """並行 POST 時にも MAX_METRICS_PER_NAME の上限が破られないことを確認。"""
+    monkeypatch.setenv("MAX_METRICS_PER_NAME", "20")
+    importlib.reload(app_module)
+    new_client = TestClient(app_module.app)
+    total = 200
+
+    def post_one(i: int) -> int:
+        resp = new_client.post("/api/v1/metrics", json={"name": "capped", "value": i})
+        assert resp.status_code == 201, resp.text
+        return resp.status_code
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        list(pool.map(post_one, range(total)))
+
+    resp = new_client.get("/api/v1/metrics/capped")
+    assert resp.status_code == 200
+    data = resp.json()
+    # 上限ぴったり保持され、超過しない
+    assert data["count"] == 20
+    # ID は累積カウンタ由来なので、保持されているのは最も新しい 20 件
+    suffixes = sorted(int(m["id"].rsplit("-", 1)[1]) for m in data["metrics"])
+    assert suffixes == list(range(total - 20, total))
+
+    monkeypatch.delenv("MAX_METRICS_PER_NAME", raising=False)
+    importlib.reload(app_module)
+
+
+def test_concurrent_delete_and_post_keeps_state_consistent():
+    """DELETE と POST が並行しても、内部状態（store と seq）が整合する。
+
+    DELETE が store と seq を別々に pop していると、間に走った POST が
+    新しい entry を作り、seq だけが残るような不整合が起きる可能性があった。
+    """
+    # 事前に 10 件入れておく
+    for v in range(10):
+        client.post("/api/v1/metrics", json={"name": "shared", "value": v})
+
+    # DELETE と POST を並行
+    def do_delete() -> int:
+        return client.delete("/api/v1/metrics/shared").status_code
+
+    def do_post(i: int) -> int:
+        return client.post("/api/v1/metrics", json={"name": "shared", "value": i}).status_code
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        delete_future = pool.submit(do_delete)
+        post_futures = [pool.submit(do_post, i) for i in range(100, 130)]
+        delete_future.result()
+        for f in post_futures:
+            f.result()
+
+    # 並行アクセスの後でも、最終状態の ID は重複しない
+    resp = client.get("/api/v1/metrics/shared")
+    if resp.status_code == 200:
+        ids = [m["id"] for m in resp.json()["metrics"]]
+        assert len(ids) == len(set(ids)), "ids must remain unique after concurrent delete/post"
