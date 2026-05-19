@@ -75,6 +75,16 @@ The in-memory store is bounded per metric name via `MAX_METRICS_PER_NAME`
 (default `1000`). When the limit is exceeded, the oldest entries are evicted
 in FIFO order. Set the variable to `0` to disable the cap.
 
+**並行安全性 (Concurrency safety):**
+
+FastAPI は `def` ハンドラをスレッドプール上で並行に実行するため、in-memory
+store (`metrics_store`) と ID 採番カウンタ (`metrics_seq`) へのアクセスは
+`threading.RLock` で同期化されている。これにより以下が保証される:
+
+- 同一 `name` に対する並行 POST でも ID は一意（`<name>-<seq>` が衝突しない）
+- FIFO eviction 後も `MAX_METRICS_PER_NAME` の上限が厳密に守られる
+- DELETE と POST の競合時にも store と seq の整合性が保たれる
+
 **Create a metric:**
 
 ```bash
