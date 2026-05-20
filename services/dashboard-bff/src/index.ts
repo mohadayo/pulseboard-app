@@ -1,17 +1,39 @@
 import express, { Request, Response, NextFunction } from "express";
 
 const app = express();
-app.use(express.json());
+
+// JSON ペイロードの最大サイズ。express.json のデフォルトは 100kb だが
+// 環境変数で明示・上書きできるようにする。
+const MAX_REQUEST_BODY = process.env.MAX_REQUEST_BODY || "100kb";
+app.use(express.json({ limit: MAX_REQUEST_BODY }));
 
 const PORT = process.env.PORT || 8002;
 const API_GATEWAY_URL =
   process.env.API_GATEWAY_URL || "http://api-gateway:8000";
 const WORKER_URL = process.env.WORKER_URL || "http://metrics-worker:8001";
 
+// dashboardStore の保持件数上限。0 以下なら無制限。
+// 既定値は他サービス（api-gateway の MAX_METRICS_PER_NAME=1000）より
+// 大きめの 10000 にしている（dashboard-bff は名前ごとではなく合算で保持するため）。
+function parseMaxDashboardMetrics(): number {
+  const raw = process.env.MAX_DASHBOARD_METRICS;
+  if (raw === undefined || raw === "") {
+    return 10000;
+  }
+  const parsed = parseInt(raw, 10);
+  if (Number.isNaN(parsed)) {
+    log("WARN", `Invalid MAX_DASHBOARD_METRICS=${raw}, falling back to 10000`);
+    return 10000;
+  }
+  return parsed;
+}
+
 function log(level: string, message: string): void {
   const ts = new Date().toISOString();
   console.log(`${ts} [${level}] dashboard-bff: ${message}`);
 }
+
+const MAX_DASHBOARD_METRICS = parseMaxDashboardMetrics();
 
 interface DashboardMetric {
   name: string;
@@ -57,6 +79,17 @@ app.post("/api/v1/dashboard/metrics", (req: Request, res: Response) => {
     recorded_at: new Date().toISOString(),
   };
   dashboardStore.push(metric);
+
+  // 保持件数上限を超えたら FIFO で古いものから破棄する。
+  if (MAX_DASHBOARD_METRICS > 0 && dashboardStore.length > MAX_DASHBOARD_METRICS) {
+    const overflow = dashboardStore.length - MAX_DASHBOARD_METRICS;
+    dashboardStore.splice(0, overflow);
+    log(
+      "INFO",
+      `Evicted ${overflow} old metric(s) (cap=${MAX_DASHBOARD_METRICS})`
+    );
+  }
+
   log("INFO", `Dashboard metric added: ${name} = ${value}`);
   res.status(201).json(metric);
 });
@@ -86,12 +119,56 @@ app.get(
   }
 );
 
+// 全メトリクスを破棄する。運用時の掃除手段として用意する。
+app.delete("/api/v1/dashboard/metrics", (_req: Request, res: Response) => {
+  const deleted = dashboardStore.length;
+  dashboardStore.length = 0;
+  log("INFO", `Deleted ${deleted} dashboard metric(s) (all)`);
+  res.json({ deleted });
+});
+
+// 名前指定で破棄する。存在しない名前は 404。
+app.delete(
+  "/api/v1/dashboard/metrics/:name",
+  (req: Request, res: Response) => {
+    const { name } = req.params;
+    const before = dashboardStore.length;
+    // 同名分だけ in-place で除去（split + reassign は export 参照を壊すため避ける）
+    for (let i = dashboardStore.length - 1; i >= 0; i--) {
+      if (dashboardStore[i].name === name) {
+        dashboardStore.splice(i, 1);
+      }
+    }
+    const deleted = before - dashboardStore.length;
+    if (deleted === 0) {
+      log("WARN", `Delete miss: no metrics matched name='${name}'`);
+      res.status(404).json({ error: `No metrics found for '${name}'` });
+      return;
+    }
+    log("INFO", `Deleted ${deleted} metric(s) for name='${name}'`);
+    res.json({ deleted, name });
+  }
+);
+
+// express.json の limit 超過は SyntaxError ではなく entity.too.large になる。
+// 専用のエラーハンドラを置いて 413 を返す（既存の 500 ハンドラの前段）。
+app.use(
+  (err: Error & { type?: string; status?: number }, _req: Request, res: Response, next: NextFunction) => {
+    if (err && (err.type === "entity.too.large" || err.status === 413)) {
+      log("WARN", `Request body too large (limit=${MAX_REQUEST_BODY})`);
+      res.status(413).json({ error: "request body too large" });
+      return;
+    }
+    next(err);
+  }
+);
+
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   log("ERROR", `Unhandled error: ${err.message}`);
   res.status(500).json({ error: "Internal server error" });
 });
 
-export { app, dashboardStore };
+export { app, dashboardStore, MAX_DASHBOARD_METRICS, MAX_REQUEST_BODY };
 
 if (require.main === module) {
   app.listen(PORT, () => {
