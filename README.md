@@ -129,6 +129,13 @@ The response includes `count`, `sum`, `avg`, `min`, `max`, `std_dev`,
 | `POST` | `/api/v1/dashboard/metrics` | Add a dashboard metric |
 | `GET` | `/api/v1/dashboard/summary` | Get dashboard summary (last 50 metrics) |
 | `GET` | `/api/v1/dashboard/metrics/{name}` | Get metrics by name |
+| `DELETE` | `/api/v1/dashboard/metrics` | 全メトリクスを破棄（運用時のクリーンアップ用） |
+| `DELETE` | `/api/v1/dashboard/metrics/{name}` | 名前指定で破棄（該当なしは `404`） |
+
+ストアと入力サイズには次の上限がある（メモリ枯渇による DoS リスクを抑える目的）：
+
+- `MAX_DASHBOARD_METRICS`（既定 `10000`、`0` 以下で無制限）— 保持件数を超えたら FIFO で古い順に破棄
+- `MAX_REQUEST_BODY`（既定 `100kb`）— `express.json` のサイズ上限。超過リクエストは `413` で拒否
 
 ## Development
 
