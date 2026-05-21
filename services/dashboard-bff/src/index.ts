@@ -35,6 +35,9 @@ function log(level: string, message: string): void {
 
 const MAX_DASHBOARD_METRICS = parseMaxDashboardMetrics();
 
+// メトリクス名の最大文字数。上流の api-gateway (Python) と揃える。
+const MAX_METRIC_NAME_LENGTH = 128;
+
 interface DashboardMetric {
   name: string;
   value: number;
@@ -64,11 +67,31 @@ app.get("/health", (_req: Request, res: Response) => {
 const dashboardStore: DashboardMetric[] = [];
 
 app.post("/api/v1/dashboard/metrics", (req: Request, res: Response) => {
-  const { name, value, tags } = req.body;
+  const { name, value, tags } = req.body ?? {};
 
-  if (!name || typeof value !== "number") {
+  // name は string でなければ受け付けない。
+  // (truthy チェックだけだと数値/オブジェクト等も通り抜けてしまう)
+  if (typeof name !== "string" || name.length === 0) {
     log("WARN", `Invalid metric payload: ${JSON.stringify(req.body)}`);
-    res.status(400).json({ error: "name (string) and value (number) are required" });
+    res
+      .status(400)
+      .json({ error: "name (non-empty string) and value (finite number) are required" });
+    return;
+  }
+  if (name.length > MAX_METRIC_NAME_LENGTH) {
+    log("WARN", `Metric name too long: length=${name.length}`);
+    res.status(400).json({
+      error: `name must be at most ${MAX_METRIC_NAME_LENGTH} characters`,
+    });
+    return;
+  }
+  // value は number 型で、かつ有限値（Infinity / -Infinity / NaN を除く）でなければならない。
+  // JSON.parse('1e500') は Infinity を返すため、typeof チェックだけでは抜けてしまう。
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    log("WARN", `Invalid metric payload: ${JSON.stringify(req.body)}`);
+    res
+      .status(400)
+      .json({ error: "name (non-empty string) and value (finite number) are required" });
     return;
   }
 
@@ -168,7 +191,13 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: "Internal server error" });
 });
 
-export { app, dashboardStore, MAX_DASHBOARD_METRICS, MAX_REQUEST_BODY };
+export {
+  app,
+  dashboardStore,
+  MAX_DASHBOARD_METRICS,
+  MAX_REQUEST_BODY,
+  MAX_METRIC_NAME_LENGTH,
+};
 
 if (require.main === module) {
   app.listen(PORT, () => {

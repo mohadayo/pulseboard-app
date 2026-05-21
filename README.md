@@ -93,6 +93,12 @@ curl -X POST http://localhost:8000/api/v1/metrics \
   -d '{"name": "cpu_usage", "value": 72.5, "tags": {"host": "srv-1"}}'
 ```
 
+**入力バリデーション:**
+
+- `name` は 1〜128 文字の文字列
+- `value` は有限な数値のみ受け付け、`+Infinity` / `-Infinity` / `NaN` は `422` で拒否される
+  （JSON 仕様上 `1e500` は許容されるが Python では `inf` に解釈されるため、集計や直近値の破壊を防ぐ目的）
+
 ### Metrics Worker (`:8001`)
 
 | Method | Endpoint | Description |
@@ -136,6 +142,12 @@ The response includes `count`, `sum`, `avg`, `min`, `max`, `std_dev`,
 
 - `MAX_DASHBOARD_METRICS`（既定 `10000`、`0` 以下で無制限）— 保持件数を超えたら FIFO で古い順に破棄
 - `MAX_REQUEST_BODY`（既定 `100kb`）— `express.json` のサイズ上限。超過リクエストは `413` で拒否
+
+POST `/api/v1/dashboard/metrics` の入力バリデーション：
+
+- `name` は文字列で、長さは 1〜128 文字（上流の api-gateway と同じ上限）
+- `value` は `Number.isFinite` を満たす数値。`Infinity` / `-Infinity` / `NaN` は `400` で拒否
+  （`JSON.parse('1e500')` は `Infinity` を返すため、`typeof === 'number'` だけでは抜けてしまう）
 
 ## Development
 
