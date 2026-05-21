@@ -45,6 +45,36 @@ def test_create_metric_invalid_name():
     assert resp.status_code == 422
 
 
+def test_create_metric_rejects_positive_infinity():
+    # JSON は 1e500 を許可するが、Python では +Infinity に解釈される。
+    # サマリ等の数値出力を汚染しないよう 422 で拒否すること。
+    resp = client.post(
+        "/api/v1/metrics",
+        content=b'{"name":"cpu","value":1e500}',
+        headers={"content-type": "application/json"},
+    )
+    assert resp.status_code == 422
+
+
+def test_create_metric_rejects_negative_infinity():
+    resp = client.post(
+        "/api/v1/metrics",
+        content=b'{"name":"cpu","value":-1e500}',
+        headers={"content-type": "application/json"},
+    )
+    assert resp.status_code == 422
+
+
+def test_create_metric_rejects_nan_string():
+    # Pydantic は `"NaN"` 等の文字列もパースしようとする可能性があるため、
+    # 念のため明示的に拒否されることを確認する。
+    resp = client.post(
+        "/api/v1/metrics",
+        json={"name": "cpu", "value": "NaN"},
+    )
+    assert resp.status_code == 422
+
+
 def test_list_metrics_empty():
     resp = client.get("/api/v1/metrics")
     assert resp.status_code == 200
