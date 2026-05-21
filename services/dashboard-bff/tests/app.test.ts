@@ -1,5 +1,10 @@
 import request from "supertest";
-import { app, dashboardStore, MAX_DASHBOARD_METRICS } from "../src/index";
+import {
+  app,
+  dashboardStore,
+  MAX_DASHBOARD_METRICS,
+  MAX_METRIC_NAME_LENGTH,
+} from "../src/index";
 
 beforeEach(() => {
   dashboardStore.length = 0;
@@ -54,6 +59,66 @@ describe("POST /api/v1/dashboard/metrics", () => {
       .post("/api/v1/dashboard/metrics")
       .send({ name: "cpu", value: "high" });
     expect(res.status).toBe(400);
+  });
+
+  it("rejects non-string name (number)", async () => {
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: 42, value: 1 });
+    expect(res.status).toBe(400);
+    expect(dashboardStore).toHaveLength(0);
+  });
+
+  it("rejects non-string name (object)", async () => {
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: { evil: true }, value: 1 });
+    expect(res.status).toBe(400);
+    expect(dashboardStore).toHaveLength(0);
+  });
+
+  it("rejects empty string name", async () => {
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "", value: 1 });
+    expect(res.status).toBe(400);
+    expect(dashboardStore).toHaveLength(0);
+  });
+
+  it("rejects name longer than MAX_METRIC_NAME_LENGTH", async () => {
+    const tooLong = "x".repeat(MAX_METRIC_NAME_LENGTH + 1);
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: tooLong, value: 1 });
+    expect(res.status).toBe(400);
+    expect(dashboardStore).toHaveLength(0);
+  });
+
+  it("accepts name with exactly MAX_METRIC_NAME_LENGTH characters", async () => {
+    const exact = "x".repeat(MAX_METRIC_NAME_LENGTH);
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: exact, value: 1 });
+    expect(res.status).toBe(201);
+  });
+
+  it("rejects positive Infinity (1e500 parses to Infinity)", async () => {
+    // JSON.parse('1e500') は Infinity を返すため、raw JSON で送る必要がある。
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .set("Content-Type", "application/json")
+      .send('{"name":"cpu","value":1e500}');
+    expect(res.status).toBe(400);
+    expect(dashboardStore).toHaveLength(0);
+  });
+
+  it("rejects negative Infinity", async () => {
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .set("Content-Type", "application/json")
+      .send('{"name":"cpu","value":-1e500}');
+    expect(res.status).toBe(400);
+    expect(dashboardStore).toHaveLength(0);
   });
 });
 

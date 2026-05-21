@@ -1,10 +1,13 @@
 import logging
+import math
 import os
 import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 logging.basicConfig(
@@ -47,8 +50,26 @@ def _reset_state() -> None:
 
 class MetricPayload(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
-    value: float
+    # `allow_inf_nan=False` で `+Infinity` / `-Infinity` / `NaN` を拒否する。
+    # JSON 仕様上、`1e500` のような桁あふれ数値は許容されるが Python では `inf`
+    # として読み込まれてしまい、集計・サマリ・直近値が破壊される。
+    value: float = Field(..., allow_inf_nan=False)
     tags: Optional[dict[str, str]] = None
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(_request: Request, exc: RequestValidationError):
+    # 既定ハンドラはエラーレスポンスに不正値をそのまま含めるが、`+Infinity`/`NaN`
+    # は strict-mode JSON で直列化できず 500 を引き起こす。安全に直列化できるよう、
+    # 非有限な float 入力値は文字列化したうえで返す。
+    sanitized = []
+    for err in exc.errors():
+        sanitized_err = dict(err)
+        value = sanitized_err.get("input")
+        if isinstance(value, float) and not math.isfinite(value):
+            sanitized_err["input"] = str(value)
+        sanitized.append(sanitized_err)
+    return JSONResponse(status_code=422, content={"detail": sanitized})
 
 
 class MetricResponse(BaseModel):
