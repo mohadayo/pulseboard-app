@@ -133,7 +133,7 @@ The response includes `count`, `sum`, `avg`, `min`, `max`, `std_dev`,
 |--------|----------|-------------|
 | `GET` | `/health` | Health check |
 | `POST` | `/api/v1/dashboard/metrics` | Add a dashboard metric |
-| `GET` | `/api/v1/dashboard/summary` | Get dashboard summary (last 50 metrics) |
+| `GET` | `/api/v1/dashboard/summary` | Get dashboard summary（既定で最新 50 件、`?limit=` で件数指定可） |
 | `GET` | `/api/v1/dashboard/metrics/{name}` | Get metrics by name |
 | `DELETE` | `/api/v1/dashboard/metrics` | 全メトリクスを破棄（運用時のクリーンアップ用） |
 | `DELETE` | `/api/v1/dashboard/metrics/{name}` | 名前指定で破棄（該当なしは `404`） |
@@ -148,6 +148,21 @@ POST `/api/v1/dashboard/metrics` の入力バリデーション：
 - `name` は文字列で、長さは 1〜128 文字（上流の api-gateway と同じ上限）
 - `value` は `Number.isFinite` を満たす数値。`Infinity` / `-Infinity` / `NaN` は `400` で拒否
   （`JSON.parse('1e500')` は `Infinity` を返すため、`typeof === 'number'` だけでは抜けてしまう）
+
+GET `/api/v1/dashboard/summary` の件数制御：
+
+- `?limit=` で返却件数を指定可能（範囲 `1`〜`MAX_SUMMARY_LIMIT`、既定 `50`、後方互換）
+- `MAX_SUMMARY_LIMIT`（既定 `500`、環境変数で上書き可）を超えると `400`
+- 整数以外（`10.5` / `abc` / 配列）や `0` 以下も `400` で拒否
+- レスポンスに `limit` フィールドが含まれ、要求された件数が明示される
+
+```bash
+# 既定（最新 50 件）
+curl http://localhost:8002/api/v1/dashboard/summary
+
+# 直近 10 件
+curl "http://localhost:8002/api/v1/dashboard/summary?limit=10"
+```
 
 ## Development
 

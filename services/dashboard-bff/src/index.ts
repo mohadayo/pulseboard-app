@@ -38,6 +38,52 @@ const MAX_DASHBOARD_METRICS = parseMaxDashboardMetrics();
 // メトリクス名の最大文字数。上流の api-gateway (Python) と揃える。
 const MAX_METRIC_NAME_LENGTH = 128;
 
+// /api/v1/dashboard/summary の limit 既定値と上限。
+const DEFAULT_SUMMARY_LIMIT = 50;
+
+function parseMaxSummaryLimit(): number {
+  const raw = process.env.MAX_SUMMARY_LIMIT;
+  if (raw === undefined || raw === "") {
+    return 500;
+  }
+  const parsed = parseInt(raw, 10);
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    log("WARN", `Invalid MAX_SUMMARY_LIMIT=${raw}, falling back to 500`);
+    return 500;
+  }
+  return parsed;
+}
+
+const MAX_SUMMARY_LIMIT = parseMaxSummaryLimit();
+
+// `?limit=` の入力をバリデーションして整数化する。
+// - 未指定: defaultLimit を返す
+// - 1〜maxLimit の整数文字列のみ受理（"10.5" / "abc" / "-5" / "0" は無効）
+// - 無効値の場合は null を返す（呼び出し側が 400 を返す責務）
+function parseSummaryLimit(
+  raw: unknown,
+  defaultLimit: number,
+  maxLimit: number,
+): number | null {
+  if (raw === undefined) {
+    return defaultLimit;
+  }
+  // express の req.query は string | string[] | qs.ParsedQs 形式。
+  // limit は単一スカラのみ受け付ける（配列・オブジェクトは無効）。
+  if (typeof raw !== "string" || raw.length === 0) {
+    return null;
+  }
+  // "10.5" や "  10" を弾くため、純粋な整数表記のみ通す（正の整数）。
+  if (!/^[0-9]+$/.test(raw)) {
+    return null;
+  }
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > maxLimit) {
+    return null;
+  }
+  return parsed;
+}
+
 interface DashboardMetric {
   name: string;
   value: number;
@@ -47,6 +93,7 @@ interface DashboardMetric {
 
 interface DashboardSummary {
   total_metrics: number;
+  limit: number;
   metrics: DashboardMetric[];
   generated_at: string;
 }
@@ -117,13 +164,29 @@ app.post("/api/v1/dashboard/metrics", (req: Request, res: Response) => {
   res.status(201).json(metric);
 });
 
-app.get("/api/v1/dashboard/summary", (_req: Request, res: Response) => {
+app.get("/api/v1/dashboard/summary", (req: Request, res: Response) => {
+  const limit = parseSummaryLimit(
+    req.query.limit,
+    DEFAULT_SUMMARY_LIMIT,
+    MAX_SUMMARY_LIMIT,
+  );
+  if (limit === null) {
+    log("WARN", `Invalid limit param: ${JSON.stringify(req.query.limit)}`);
+    res.status(400).json({
+      error: `limit must be a positive integer between 1 and ${MAX_SUMMARY_LIMIT}`,
+    });
+    return;
+  }
   const summary: DashboardSummary = {
     total_metrics: dashboardStore.length,
-    metrics: dashboardStore.slice(-50),
+    limit,
+    metrics: dashboardStore.slice(-limit),
     generated_at: new Date().toISOString(),
   };
-  log("INFO", `Dashboard summary generated: ${summary.total_metrics} metrics`);
+  log(
+    "INFO",
+    `Dashboard summary generated: ${summary.total_metrics} metrics (limit=${limit})`,
+  );
   res.json(summary);
 });
 
@@ -197,6 +260,9 @@ export {
   MAX_DASHBOARD_METRICS,
   MAX_REQUEST_BODY,
   MAX_METRIC_NAME_LENGTH,
+  MAX_SUMMARY_LIMIT,
+  DEFAULT_SUMMARY_LIMIT,
+  parseSummaryLimit,
 };
 
 if (require.main === module) {

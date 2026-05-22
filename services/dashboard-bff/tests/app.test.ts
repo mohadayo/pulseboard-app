@@ -4,6 +4,9 @@ import {
   dashboardStore,
   MAX_DASHBOARD_METRICS,
   MAX_METRIC_NAME_LENGTH,
+  MAX_SUMMARY_LIMIT,
+  DEFAULT_SUMMARY_LIMIT,
+  parseSummaryLimit,
 } from "../src/index";
 
 beforeEach(() => {
@@ -128,6 +131,7 @@ describe("GET /api/v1/dashboard/summary", () => {
     expect(res.status).toBe(200);
     expect(res.body.total_metrics).toBe(0);
     expect(res.body.metrics).toEqual([]);
+    expect(res.body.limit).toBe(DEFAULT_SUMMARY_LIMIT);
   });
 
   it("returns summary with metrics", async () => {
@@ -142,6 +146,104 @@ describe("GET /api/v1/dashboard/summary", () => {
     expect(res.status).toBe(200);
     expect(res.body.total_metrics).toBe(2);
     expect(res.body.metrics).toHaveLength(2);
+    expect(res.body.limit).toBe(DEFAULT_SUMMARY_LIMIT);
+  });
+
+  it("caps to default 50 when more than 50 metrics exist (backward compat)", async () => {
+    // 既定値での挙動を回帰確認：limit 未指定なら最新 50 件だけ返す。
+    for (let i = 0; i < 60; i++) {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "cpu", value: i });
+    }
+    const res = await request(app).get("/api/v1/dashboard/summary");
+    expect(res.status).toBe(200);
+    expect(res.body.total_metrics).toBe(60);
+    expect(res.body.metrics).toHaveLength(50);
+    // 末尾 50 件のうち先頭は 10、末尾は 59 のはず（FIFO push）
+    expect(res.body.metrics[0].value).toBe(10);
+    expect(res.body.metrics[49].value).toBe(59);
+  });
+
+  it("honors ?limit= when valid", async () => {
+    for (let i = 0; i < 10; i++) {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "cpu", value: i });
+    }
+    const res = await request(app).get("/api/v1/dashboard/summary?limit=3");
+    expect(res.status).toBe(200);
+    expect(res.body.limit).toBe(3);
+    expect(res.body.metrics).toHaveLength(3);
+    expect(res.body.metrics.map((m: { value: number }) => m.value)).toEqual([7, 8, 9]);
+  });
+
+  it("limit larger than store returns all metrics", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 1 });
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 2 });
+    const res = await request(app).get("/api/v1/dashboard/summary?limit=100");
+    expect(res.status).toBe(200);
+    expect(res.body.metrics).toHaveLength(2);
+  });
+
+  it("rejects limit=0", async () => {
+    const res = await request(app).get("/api/v1/dashboard/summary?limit=0");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects negative limit", async () => {
+    const res = await request(app).get("/api/v1/dashboard/summary?limit=-5");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects non-integer limit", async () => {
+    const res = await request(app).get("/api/v1/dashboard/summary?limit=10.5");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects non-numeric limit", async () => {
+    const res = await request(app).get("/api/v1/dashboard/summary?limit=abc");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects limit above MAX_SUMMARY_LIMIT", async () => {
+    const res = await request(app)
+      .get(`/api/v1/dashboard/summary?limit=${MAX_SUMMARY_LIMIT + 1}`);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("parseSummaryLimit helper", () => {
+  it("returns default when undefined", () => {
+    expect(parseSummaryLimit(undefined, 50, 500)).toBe(50);
+  });
+  it("returns null for empty string", () => {
+    expect(parseSummaryLimit("", 50, 500)).toBeNull();
+  });
+  it("returns null for array input (defensive)", () => {
+    expect(parseSummaryLimit(["10"], 50, 500)).toBeNull();
+  });
+  it("parses positive integer string", () => {
+    expect(parseSummaryLimit("25", 50, 500)).toBe(25);
+  });
+  it("rejects negative integer string", () => {
+    expect(parseSummaryLimit("-1", 50, 500)).toBeNull();
+  });
+  it("rejects zero", () => {
+    expect(parseSummaryLimit("0", 50, 500)).toBeNull();
+  });
+  it("rejects non-integer", () => {
+    expect(parseSummaryLimit("3.5", 50, 500)).toBeNull();
+  });
+  it("rejects out-of-range", () => {
+    expect(parseSummaryLimit("501", 50, 500)).toBeNull();
+  });
+  it("accepts maxLimit boundary", () => {
+    expect(parseSummaryLimit("500", 50, 500)).toBe(500);
   });
 });
 
