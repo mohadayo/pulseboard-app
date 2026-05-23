@@ -215,13 +215,11 @@ See [`.env.example`](.env.example) for all available configuration options.
 
 ## CI/CD
 
-GitHub Actions runs on every push and PR to `main`:
-1. Python tests (pytest)
-2. Go tests (go test)
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every push and PR to `main`:
+1. Python tests (flake8 lint + pytest)
+2. Go tests (go vet + go test)
 3. TypeScript tests (jest)
-4. Docker Compose build verification
-
-> **Note:** The `.github/workflows/ci.yml` file may need to be manually added after initial setup due to GitHub API restrictions.
+4. Docker Compose build verification (all tests がパスした後に実行)
 
 <details>
 <summary>CI Workflow Content</summary>
@@ -246,7 +244,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt flake8
+      - run: flake8 --max-line-length=120 --exclude=__pycache__ .
       - run: pytest -v
 
   test-go:
@@ -259,6 +258,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+      - run: go vet ./...
       - run: go test -v ./...
 
   test-typescript:
@@ -271,7 +271,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: npm install
+      - run: npm ci
       - run: npm test
 
   docker-build:
