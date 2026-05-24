@@ -69,6 +69,7 @@ make down
 | `GET` | `/api/v1/metrics` | List all metrics (optional `?name=` filter) |
 | `GET` | `/api/v1/metrics/{name}` | Get all entries for a metric |
 | `GET` | `/api/v1/metrics/{name}/latest` | Get latest value for a metric |
+| `GET` | `/api/v1/metrics/{name}/stats` | Aggregate stats for a metric (count/min/max/sum/avg/latest) |
 | `DELETE` | `/api/v1/metrics/{name}` | Delete all entries for a metric |
 
 The in-memory store is bounded per metric name via `MAX_METRICS_PER_NAME`
@@ -98,6 +99,29 @@ curl -X POST http://localhost:8000/api/v1/metrics \
 - `name` は 1〜128 文字の文字列
 - `value` は有限な数値のみ受け付け、`+Infinity` / `-Infinity` / `NaN` は `422` で拒否される
   （JSON 仕様上 `1e500` は許容されるが Python では `inf` に解釈されるため、集計や直近値の破壊を防ぐ目的）
+
+**Get aggregate stats for a metric:**
+
+保持中の値を 1 リクエストで集計する。値は記録時に有限値であることが保証されているため、
+`min` / `max` / `sum` / `avg` は安全に算出できる。該当名が無ければ `404`。
+
+```bash
+curl http://localhost:8000/api/v1/metrics/cpu_usage/stats
+```
+
+```json
+{
+  "name": "cpu_usage",
+  "count": 4,
+  "min": 10.0,
+  "max": 40.0,
+  "sum": 100.0,
+  "avg": 25.0,
+  "latest": 40.0,
+  "latest_recorded_at": "2026-05-24T00:00:03+00:00",
+  "first_recorded_at": "2026-05-24T00:00:00+00:00"
+}
+```
 
 ### Metrics Worker (`:8001`)
 
