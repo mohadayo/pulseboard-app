@@ -283,3 +283,47 @@ def test_concurrent_delete_and_post_keeps_state_consistent():
     if resp.status_code == 200:
         ids = [m["id"] for m in resp.json()["metrics"]]
         assert len(ids) == len(set(ids)), "ids must remain unique after concurrent delete/post"
+
+
+def test_get_metric_stats():
+    for v in [10.0, 20.0, 30.0, 40.0]:
+        client.post("/api/v1/metrics", json={"name": "cpu", "value": v})
+    resp = client.get("/api/v1/metrics/cpu/stats")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "cpu"
+    assert data["count"] == 4
+    assert data["min"] == 10.0
+    assert data["max"] == 40.0
+    assert data["sum"] == 100.0
+    assert data["avg"] == 25.0
+    assert data["latest"] == 40.0
+    assert "latest_recorded_at" in data
+    assert "first_recorded_at" in data
+
+
+def test_get_metric_stats_single_value():
+    client.post("/api/v1/metrics", json={"name": "mem", "value": 512.0})
+    resp = client.get("/api/v1/metrics/mem/stats")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 1
+    assert data["min"] == data["max"] == data["avg"] == data["latest"] == 512.0
+
+
+def test_get_metric_stats_not_found():
+    resp = client.get("/api/v1/metrics/nonexistent/stats")
+    assert resp.status_code == 404
+
+
+def test_get_metric_stats_does_not_shadow_other_routes():
+    """`{metric_name}/stats` ルートが `{metric_name}` / `{metric_name}/latest` と衝突しないことを確認。"""
+    client.post("/api/v1/metrics", json={"name": "disk", "value": 1})
+    client.post("/api/v1/metrics", json={"name": "disk", "value": 2})
+
+    assert client.get("/api/v1/metrics/disk").json()["count"] == 2
+    assert client.get("/api/v1/metrics/disk/latest").json()["value"] == 2
+
+    stats = client.get("/api/v1/metrics/disk/stats").json()
+    assert stats["count"] == 2
+    assert stats["latest"] == 2
