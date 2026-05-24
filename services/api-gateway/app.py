@@ -140,6 +140,37 @@ def get_latest_metric(metric_name: str):
     return latest
 
 
+@app.get("/api/v1/metrics/{metric_name}/stats")
+def get_metric_stats(metric_name: str):
+    """指定メトリクス名の保持値に対する集計統計を返す。
+
+    値は POST 時に有限値（Infinity/NaN を除く）であることが保証されているため、
+    min/max/sum/avg は安全に計算できる。`latest` は最新（末尾）の記録値。
+    """
+    with _store_lock:
+        entries = metrics_store.get(metric_name)
+        snapshot = list(entries) if entries else []
+    if not snapshot:
+        logger.warning("Metric not found: %s", metric_name)
+        raise HTTPException(status_code=404, detail=f"No metrics found for '{metric_name}'")
+    values = [m["value"] for m in snapshot]
+    total = sum(values)
+    count = len(values)
+    stats = {
+        "name": metric_name,
+        "count": count,
+        "min": min(values),
+        "max": max(values),
+        "sum": total,
+        "avg": total / count,
+        "latest": snapshot[-1]["value"],
+        "latest_recorded_at": snapshot[-1]["recorded_at"],
+        "first_recorded_at": snapshot[0]["recorded_at"],
+    }
+    logger.info("Computed stats for '%s' (count=%d)", metric_name, count)
+    return stats
+
+
 @app.get("/api/v1/metrics/{metric_name}")
 def get_metrics_by_name(metric_name: str):
     with _store_lock:
