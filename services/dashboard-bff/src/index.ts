@@ -98,6 +98,40 @@ interface DashboardSummary {
   generated_at: string;
 }
 
+interface DashboardStats {
+  name: string;
+  count: number;
+  min: number;
+  max: number;
+  sum: number;
+  avg: number;
+  latest: number;
+  latest_recorded_at: string;
+  first_recorded_at: string;
+}
+
+// 指定メトリクス名の保持値に対する集計統計を計算する。
+// metrics は時系列順（FIFO push）であることを前提とし、
+// latest は末尾・first_recorded_at は先頭の記録時刻を採用する。
+// 値は POST 時に有限値（Infinity/NaN を除く）が保証されているため、
+// min/max/sum/avg は安全に計算できる。空配列は呼び出し側で 404 にする想定。
+function computeStats(name: string, metrics: DashboardMetric[]): DashboardStats {
+  const values = metrics.map((m) => m.value);
+  const count = values.length;
+  const sum = values.reduce((acc, v) => acc + v, 0);
+  return {
+    name,
+    count,
+    min: Math.min(...values),
+    max: Math.max(...values),
+    sum,
+    avg: sum / count,
+    latest: metrics[count - 1].value,
+    latest_recorded_at: metrics[count - 1].recorded_at,
+    first_recorded_at: metrics[0].recorded_at,
+  };
+}
+
 app.get("/health", (_req: Request, res: Response) => {
   log("DEBUG", "Health check requested");
   res.json({
@@ -190,6 +224,26 @@ app.get("/api/v1/dashboard/summary", (req: Request, res: Response) => {
   res.json(summary);
 });
 
+// 指定メトリクス名の集計統計を返す。api-gateway の
+// /api/v1/metrics/{name}/stats とレスポンス形状を揃える。
+// `/:name` より前に登録して経路の衝突を避ける。
+app.get(
+  "/api/v1/dashboard/metrics/:name/stats",
+  (req: Request, res: Response) => {
+    // Express のルートパラメータは実行時には常に string。
+    const name = String(req.params.name);
+    const filtered = dashboardStore.filter((m) => m.name === name);
+    if (filtered.length === 0) {
+      log("WARN", `Metric not found: ${name}`);
+      res.status(404).json({ error: `No metrics found for '${name}'` });
+      return;
+    }
+    const stats = computeStats(name, filtered);
+    log("INFO", `Computed stats for '${name}' (count=${stats.count})`);
+    res.json(stats);
+  }
+);
+
 app.get(
   "/api/v1/dashboard/metrics/:name",
   (req: Request, res: Response) => {
@@ -263,6 +317,7 @@ export {
   MAX_SUMMARY_LIMIT,
   DEFAULT_SUMMARY_LIMIT,
   parseSummaryLimit,
+  computeStats,
 };
 
 if (require.main === module) {
