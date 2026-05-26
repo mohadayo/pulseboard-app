@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -293,8 +294,8 @@ func TestAggregateHandlerRejectsOversizedBody(t *testing.T) {
 func TestAggregateHandlerNoLimitWhenZero(t *testing.T) {
 	origValues := maxAggregateValues
 	origBody := maxAggregateBodyBytes
-	maxAggregateValues = 0       // 件数ガード無効
-	maxAggregateBodyBytes = 0    // ボディサイズガード無効
+	maxAggregateValues = 0    // 件数ガード無効
+	maxAggregateBodyBytes = 0 // ボディサイズガード無効
 	defer func() {
 		maxAggregateValues = origValues
 		maxAggregateBodyBytes = origBody
@@ -306,6 +307,60 @@ func TestAggregateHandlerNoLimitWhenZero(t *testing.T) {
 	aggregateHandler(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 when limits are 0, got %d", w.Code)
+	}
+}
+
+// 有限入力でも sum がオーバーフローして集計結果が +Inf になる場合、
+// 壊れた 200 ではなく 422 を返すことを検証（issue 再現ケース）。
+func TestAggregateHandlerRejectsNonFiniteResult(t *testing.T) {
+	body, _ := json.Marshal(AggregateRequest{Values: []float64{1.5e308, 1.5e308}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/aggregate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	aggregateHandler(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 for non-finite aggregate result, got %d (body=%q)", w.Code, w.Body.String())
+	}
+}
+
+// 非有限の入力値（+Inf）は 400 で弾かれることを検証。
+func TestAggregateHandlerRejectsNonFiniteInput(t *testing.T) {
+	body := []byte(`{"values":[1.0,2.0,1e999]}`)
+	if !bytes.Contains(body, []byte("1e999")) {
+		t.Fatal("test setup error")
+	}
+	// 1e999 は float64 でデコード時に +Inf になる（encoding/json はエラーにしない）。
+	var probe AggregateRequest
+	if err := json.Unmarshal(body, &probe); err != nil {
+		t.Skipf("decoder rejected oversized literal directly: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/aggregate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	aggregateHandler(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-finite input value, got %d (body=%q)", w.Code, w.Body.String())
+	}
+}
+
+func TestAggregateResponseHasNonFinite(t *testing.T) {
+	finite := AggregateResponse{Sum: 1, Avg: 1, Min: 1, Max: 1, StdDev: 0, Median: 1, P95: 1, P99: 1}
+	if finite.hasNonFinite() {
+		t.Error("expected finite response to report no non-finite values")
+	}
+	withInf := finite
+	withInf.Sum = math.Inf(1)
+	if !withInf.hasNonFinite() {
+		t.Error("expected response with +Inf sum to report non-finite")
+	}
+	withNaN := finite
+	withNaN.StdDev = math.NaN()
+	if !withNaN.hasNonFinite() {
+		t.Error("expected response with NaN std_dev to report non-finite")
 	}
 }
 

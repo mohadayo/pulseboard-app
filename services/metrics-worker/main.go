@@ -127,7 +127,29 @@ func aggregateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 入力に非有限値が含まれる場合は弾く（api-gateway / dashboard-bff と挙動を揃える）。
+	for i, v := range req.Values {
+		if math.IsInf(v, 0) || math.IsNaN(v) {
+			logger.Printf("Non-finite value at index %d", i)
+			http.Error(w, `{"error":"values must all be finite numbers"}`, http.StatusBadRequest)
+			return
+		}
+	}
+
 	result := computeAggregate(req.Values)
+
+	// 入力が有限でも sum のオーバーフロー等で集計結果が Inf/NaN になりうる。
+	// その場合 json.Encode が失敗し「200 + 壊れた空ボディ」を返してしまうため、
+	// エンコード前に検出して明示的に 422 を返す。
+	if result.hasNonFinite() {
+		logger.Printf("Aggregate produced a non-finite result (count=%d)", result.Count)
+		http.Error(
+			w,
+			`{"error":"aggregate result is not finite; input values may be out of representable range"}`,
+			http.StatusUnprocessableEntity,
+		)
+		return
+	}
 
 	jobMu.Lock()
 	jobCount++
@@ -158,6 +180,18 @@ func percentile(sorted []float64, pct float64) float64 {
 	}
 	weight := rank - float64(lower)
 	return sorted[lower]*(1-weight) + sorted[upper]*weight
+}
+
+// hasNonFinite は集計結果のいずれかの数値フィールドが非有限値 (Inf / NaN) に
+// なっていないかを判定する。有限入力でもオーバーフローで非有限になりうるため、
+// 壊れた 200 応答を返す前にこの判定を用いる。
+func (a AggregateResponse) hasNonFinite() bool {
+	for _, v := range []float64{a.Sum, a.Avg, a.Min, a.Max, a.StdDev, a.Median, a.P95, a.P99} {
+		if math.IsInf(v, 0) || math.IsNaN(v) {
+			return true
+		}
+	}
+	return false
 }
 
 func computeAggregate(values []float64) AggregateResponse {
