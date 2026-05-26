@@ -7,6 +7,7 @@ import {
   MAX_SUMMARY_LIMIT,
   DEFAULT_SUMMARY_LIMIT,
   parseSummaryLimit,
+  computeStats,
 } from "../src/index";
 
 beforeEach(() => {
@@ -268,6 +269,107 @@ describe("GET /api/v1/dashboard/metrics/:name", () => {
   it("returns 404 for unknown metric", async () => {
     const res = await request(app).get("/api/v1/dashboard/metrics/unknown");
     expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /api/v1/dashboard/metrics/:name/stats", () => {
+  it("returns aggregate stats for a name", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 50 });
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 65 });
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 75 });
+    // 別名のメトリクスは集計対象に含めない
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "mem", value: 1024 });
+
+    const res = await request(app).get("/api/v1/dashboard/metrics/cpu/stats");
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe("cpu");
+    expect(res.body.count).toBe(3);
+    expect(res.body.min).toBe(50);
+    expect(res.body.max).toBe(75);
+    expect(res.body.sum).toBe(190);
+    expect(res.body.avg).toBeCloseTo(63.3333, 4);
+    expect(res.body.latest).toBe(75);
+    expect(res.body.latest_recorded_at).toBeDefined();
+    expect(res.body.first_recorded_at).toBeDefined();
+  });
+
+  it("returns 404 for unknown metric", async () => {
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/unknown/stats",
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("handles a single metric", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "disk", value: 42 });
+    const res = await request(app).get("/api/v1/dashboard/metrics/disk/stats");
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(1);
+    expect(res.body.min).toBe(42);
+    expect(res.body.max).toBe(42);
+    expect(res.body.avg).toBe(42);
+    expect(res.body.latest).toBe(42);
+  });
+
+  it("does not collide with the /:name list route", async () => {
+    // 名前が "stats" のメトリクスを登録しても、/:name/stats は集計を返し、
+    // /:name は一覧を返す（経路が衝突しないことの確認）。
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "stats", value: 7 });
+
+    const statsRes = await request(app).get(
+      "/api/v1/dashboard/metrics/stats/stats",
+    );
+    expect(statsRes.status).toBe(200);
+    expect(statsRes.body.count).toBe(1);
+    expect(statsRes.body.sum).toBe(7);
+
+    const listRes = await request(app).get("/api/v1/dashboard/metrics/stats");
+    expect(listRes.status).toBe(200);
+    expect(listRes.body.metrics).toHaveLength(1);
+    expect(listRes.body.name).toBe("stats");
+  });
+});
+
+describe("computeStats helper", () => {
+  it("computes stats over provided metrics in order", () => {
+    const now = new Date().toISOString();
+    const later = new Date(Date.now() + 1000).toISOString();
+    const stats = computeStats("cpu", [
+      { name: "cpu", value: 10, recorded_at: now },
+      { name: "cpu", value: 30, recorded_at: later },
+    ]);
+    expect(stats.count).toBe(2);
+    expect(stats.min).toBe(10);
+    expect(stats.max).toBe(30);
+    expect(stats.sum).toBe(40);
+    expect(stats.avg).toBe(20);
+    expect(stats.latest).toBe(30);
+    expect(stats.latest_recorded_at).toBe(later);
+    expect(stats.first_recorded_at).toBe(now);
+  });
+
+  it("handles negative values", () => {
+    const ts = new Date().toISOString();
+    const stats = computeStats("delta", [
+      { name: "delta", value: -5, recorded_at: ts },
+      { name: "delta", value: 5, recorded_at: ts },
+    ]);
+    expect(stats.min).toBe(-5);
+    expect(stats.max).toBe(5);
+    expect(stats.sum).toBe(0);
+    expect(stats.avg).toBe(0);
   });
 });
 
