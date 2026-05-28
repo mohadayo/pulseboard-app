@@ -263,12 +263,151 @@ describe("GET /api/v1/dashboard/metrics/:name", () => {
     const res = await request(app).get("/api/v1/dashboard/metrics/cpu");
     expect(res.status).toBe(200);
     expect(res.body.count).toBe(2);
+    expect(res.body.total).toBe(2);
     expect(res.body.name).toBe("cpu");
   });
 
   it("returns 404 for unknown metric", async () => {
     const res = await request(app).get("/api/v1/dashboard/metrics/unknown");
     expect(res.status).toBe(404);
+  });
+
+  // since / until / limit / offset
+  describe("filtering and pagination", () => {
+    async function seed(name: string, count: number): Promise<void> {
+      for (let i = 0; i < count; i++) {
+        await request(app)
+          .post("/api/v1/dashboard/metrics")
+          .send({ name, value: i });
+      }
+    }
+
+    it("applies limit and offset to the response", async () => {
+      await seed("cpu", 5);
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/cpu?limit=2&offset=1",
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.total).toBe(5);
+      expect(res.body.count).toBe(2);
+      expect(res.body.limit).toBe(2);
+      expect(res.body.offset).toBe(1);
+      expect(res.body.metrics.map((m: { value: number }) => m.value)).toEqual([1, 2]);
+    });
+
+    it("defaults limit to DEFAULT_SUMMARY_LIMIT when not specified", async () => {
+      await seed("cpu", DEFAULT_SUMMARY_LIMIT + 3);
+      const res = await request(app).get("/api/v1/dashboard/metrics/cpu");
+      expect(res.status).toBe(200);
+      expect(res.body.total).toBe(DEFAULT_SUMMARY_LIMIT + 3);
+      expect(res.body.count).toBe(DEFAULT_SUMMARY_LIMIT);
+      expect(res.body.metrics).toHaveLength(DEFAULT_SUMMARY_LIMIT);
+    });
+
+    it("returns empty page when offset is beyond available count", async () => {
+      await seed("cpu", 3);
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/cpu?offset=10",
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.total).toBe(3);
+      expect(res.body.count).toBe(0);
+      expect(res.body.metrics).toEqual([]);
+    });
+
+    it("filters by since (inclusive)", async () => {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "cpu", value: 1 });
+      // 確実に recorded_at が変わるよう少し待つ
+      await new Promise((r) => setTimeout(r, 10));
+      const cutoff = new Date().toISOString();
+      await new Promise((r) => setTimeout(r, 10));
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "cpu", value: 2 });
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "cpu", value: 3 });
+
+      const res = await request(app).get(
+        `/api/v1/dashboard/metrics/cpu?since=${encodeURIComponent(cutoff)}`,
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.total).toBe(2);
+      expect(res.body.metrics.map((m: { value: number }) => m.value)).toEqual([2, 3]);
+    });
+
+    it("filters by until (inclusive)", async () => {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "cpu", value: 1 });
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "cpu", value: 2 });
+      await new Promise((r) => setTimeout(r, 10));
+      const cutoff = new Date().toISOString();
+      await new Promise((r) => setTimeout(r, 10));
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "cpu", value: 3 });
+
+      const res = await request(app).get(
+        `/api/v1/dashboard/metrics/cpu?until=${encodeURIComponent(cutoff)}`,
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.total).toBe(2);
+      expect(res.body.metrics.map((m: { value: number }) => m.value)).toEqual([1, 2]);
+    });
+
+    it("rejects invalid since ISO8601", async () => {
+      await seed("cpu", 1);
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/cpu?since=not-a-date",
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("since");
+    });
+
+    it("rejects invalid until ISO8601", async () => {
+      await seed("cpu", 1);
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/cpu?until=banana",
+      );
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects since > until", async () => {
+      await seed("cpu", 1);
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/cpu?since=2024-06-01T00:00:00Z&until=2024-01-01T00:00:00Z",
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("since");
+    });
+
+    it("rejects negative offset", async () => {
+      await seed("cpu", 1);
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/cpu?offset=-1",
+      );
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects non-integer limit", async () => {
+      await seed("cpu", 1);
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/cpu?limit=abc",
+      );
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 404 when no metrics match the name (before time filter)", async () => {
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/nope?since=2024-01-01T00:00:00Z",
+      );
+      expect(res.status).toBe(404);
+    });
   });
 });
 

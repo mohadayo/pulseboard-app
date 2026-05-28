@@ -84,6 +84,27 @@ function parseSummaryLimit(
   return parsed;
 }
 
+// offset クエリパラメータをパースする。
+// - 未指定: 0 を返す
+// - 0 以上の整数文字列のみ受理（"abc" / "-1" / "1.5" は無効）
+// - 無効値の場合は null を返す（呼び出し側が 400 を返す責務）
+function parseOffsetParam(raw: unknown): number | null {
+  if (raw === undefined) {
+    return 0;
+  }
+  if (typeof raw !== "string" || raw.length === 0) {
+    return null;
+  }
+  if (!/^[0-9]+$/.test(raw)) {
+    return null;
+  }
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
+}
+
 interface DashboardMetric {
   name: string;
   value: number;
@@ -115,6 +136,52 @@ interface DashboardStats {
 // latest は末尾・first_recorded_at は先頭の記録時刻を採用する。
 // 値は POST 時に有限値（Infinity/NaN を除く）が保証されているため、
 // min/max/sum/avg は安全に計算できる。空配列は呼び出し側で 404 にする想定。
+// `since` / `until` を ISO8601 として解釈する。
+// 戻り値は `{ value: Date | null, error: string | null }`：
+// - 未指定: value=null, error=null
+// - パース不能: value=null, error="..."
+// - 正常: value=Date, error=null
+function parseIsoDateTime(
+  raw: unknown,
+  name: string,
+): { value: Date | null; error: string | null } {
+  if (raw === undefined) {
+    return { value: null, error: null };
+  }
+  if (typeof raw !== "string" || raw.length === 0) {
+    return { value: null, error: `${name} must be a non-empty ISO8601 string` };
+  }
+  // ISO8601 を Date.parse でパース。NaN なら無効。
+  const ms = Date.parse(raw);
+  if (Number.isNaN(ms)) {
+    return { value: null, error: `${name} must be a valid ISO8601 datetime` };
+  }
+  return { value: new Date(ms), error: null };
+}
+
+function filterByRecordedAt(
+  metrics: DashboardMetric[],
+  since: Date | null,
+  until: Date | null,
+): DashboardMetric[] {
+  if (since === null && until === null) {
+    return metrics;
+  }
+  return metrics.filter((m) => {
+    const ts = Date.parse(m.recorded_at);
+    if (Number.isNaN(ts)) {
+      return false;
+    }
+    if (since !== null && ts < since.getTime()) {
+      return false;
+    }
+    if (until !== null && ts > until.getTime()) {
+      return false;
+    }
+    return true;
+  });
+}
+
 function computeStats(name: string, metrics: DashboardMetric[]): DashboardStats {
   const values = metrics.map((m) => m.value);
   const count = values.length;
@@ -248,14 +315,81 @@ app.get(
   "/api/v1/dashboard/metrics/:name",
   (req: Request, res: Response) => {
     const { name } = req.params;
-    const filtered = dashboardStore.filter((m) => m.name === name);
-    if (filtered.length === 0) {
+
+    // since / until は ISO8601 文字列。未指定なら null。
+    const sinceParsed = parseIsoDateTime(req.query.since, "since");
+    if (sinceParsed.error !== null) {
+      log("WARN", `Invalid since param: ${JSON.stringify(req.query.since)}`);
+      res.status(400).json({ error: sinceParsed.error });
+      return;
+    }
+    const untilParsed = parseIsoDateTime(req.query.until, "until");
+    if (untilParsed.error !== null) {
+      log("WARN", `Invalid until param: ${JSON.stringify(req.query.until)}`);
+      res.status(400).json({ error: untilParsed.error });
+      return;
+    }
+    if (
+      sinceParsed.value !== null &&
+      untilParsed.value !== null &&
+      sinceParsed.value.getTime() > untilParsed.value.getTime()
+    ) {
+      log(
+        "WARN",
+        `Invalid range: since=${req.query.since} > until=${req.query.until}`,
+      );
+      res
+        .status(400)
+        .json({ error: "since must be less than or equal to until" });
+      return;
+    }
+
+    const limit = parseSummaryLimit(
+      req.query.limit,
+      DEFAULT_SUMMARY_LIMIT,
+      MAX_SUMMARY_LIMIT,
+    );
+    if (limit === null) {
+      log("WARN", `Invalid limit param: ${JSON.stringify(req.query.limit)}`);
+      res.status(400).json({
+        error: `limit must be a positive integer between 1 and ${MAX_SUMMARY_LIMIT}`,
+      });
+      return;
+    }
+    // offset は 0 以上。parseSummaryLimit は最小 1 のため別関数で扱う。
+    const offset = parseOffsetParam(req.query.offset);
+    if (offset === null) {
+      log("WARN", `Invalid offset param: ${JSON.stringify(req.query.offset)}`);
+      res.status(400).json({ error: "offset must be a non-negative integer" });
+      return;
+    }
+
+    const filteredByName = dashboardStore.filter((m) => m.name === name);
+    if (filteredByName.length === 0) {
       log("WARN", `Metric not found: ${name}`);
       res.status(404).json({ error: `No metrics found for '${name}'` });
       return;
     }
-    log("INFO", `Found ${filtered.length} metrics for '${name}'`);
-    res.json({ name, count: filtered.length, metrics: filtered });
+    const filtered = filterByRecordedAt(
+      filteredByName,
+      sinceParsed.value,
+      untilParsed.value,
+    );
+
+    const total = filtered.length;
+    const page = filtered.slice(offset, offset + limit);
+    log(
+      "INFO",
+      `Found ${total} metrics for '${name}' (returning ${page.length}, limit=${limit}, offset=${offset})`,
+    );
+    res.json({
+      name,
+      count: page.length,
+      total,
+      limit,
+      offset,
+      metrics: page,
+    });
   }
 );
 
@@ -317,6 +451,9 @@ export {
   MAX_SUMMARY_LIMIT,
   DEFAULT_SUMMARY_LIMIT,
   parseSummaryLimit,
+  parseOffsetParam,
+  parseIsoDateTime,
+  filterByRecordedAt,
   computeStats,
 };
 
