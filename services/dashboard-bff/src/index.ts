@@ -56,6 +56,73 @@ function parseMaxSummaryLimit(): number {
 
 const MAX_SUMMARY_LIMIT = parseMaxSummaryLimit();
 
+// POST /api/v1/dashboard/metrics の `tags` バリデーション上限。
+// プレーンオブジェクト以外は弾き、各キー・値・要素数に上限を設けて
+// 不正な型や過大なペイロードを店子コードまで通さない。
+function parseTagsLimit(envKey: string, fallback: number): number {
+  const raw = process.env[envKey];
+  if (raw === undefined || raw === "") return fallback;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    log("WARN", `Invalid ${envKey}=${raw}, falling back to ${fallback}`);
+    return fallback;
+  }
+  return n;
+}
+
+const TAG_KEY_MAX_LENGTH = parseTagsLimit("TAG_KEY_MAX_LENGTH", 64);
+const TAG_VALUE_MAX_LENGTH = parseTagsLimit("TAG_VALUE_MAX_LENGTH", 256);
+const TAG_MAX_KEYS = parseTagsLimit("TAG_MAX_KEYS", 16);
+
+// `tags` の実行時バリデーション。型注釈 `Record<string, string>` は
+// 実行時には強制されないため、明示的にチェックする。
+// 戻り値:
+//   - `{ ok: true, value: ...|undefined }` … 受け入れ
+//   - `{ ok: false, error: "..." }` … 400 を返す対象
+function validateTags(
+  raw: unknown,
+):
+  | { ok: true; value: Record<string, string> | undefined }
+  | { ok: false; error: string } {
+  if (raw === undefined || raw === null) {
+    return { ok: true, value: undefined };
+  }
+  // 配列は object 扱いだが許可しない。
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, error: "tags must be a plain object of string → string" };
+  }
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length > TAG_MAX_KEYS) {
+    return {
+      ok: false,
+      error: `tags must have at most ${TAG_MAX_KEYS} keys (got ${entries.length})`,
+    };
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of entries) {
+    if (typeof k !== "string" || k.length === 0) {
+      return { ok: false, error: "tags keys must be non-empty strings" };
+    }
+    if (k.length > TAG_KEY_MAX_LENGTH) {
+      return {
+        ok: false,
+        error: `tags keys must be at most ${TAG_KEY_MAX_LENGTH} characters`,
+      };
+    }
+    if (typeof v !== "string") {
+      return { ok: false, error: `tags['${k}'] must be a string` };
+    }
+    if (v.length > TAG_VALUE_MAX_LENGTH) {
+      return {
+        ok: false,
+        error: `tags['${k}'] must be at most ${TAG_VALUE_MAX_LENGTH} characters`,
+      };
+    }
+    out[k] = v;
+  }
+  return { ok: true, value: out };
+}
+
 // `?limit=` の入力をバリデーションして整数化する。
 // - 未指定: defaultLimit を返す
 // - 1〜maxLimit の整数文字列のみ受理（"10.5" / "abc" / "-5" / "0" は無効）
@@ -243,10 +310,18 @@ app.post("/api/v1/dashboard/metrics", (req: Request, res: Response) => {
     return;
   }
 
+  // tags は型注釈だけでは実行時に強制されないため、明示的にバリデーションする。
+  const tagsResult = validateTags(tags);
+  if (!tagsResult.ok) {
+    log("WARN", `Invalid metric tags: ${tagsResult.error}`);
+    res.status(400).json({ error: tagsResult.error });
+    return;
+  }
+
   const metric: DashboardMetric = {
     name,
     value,
-    tags,
+    tags: tagsResult.value,
     recorded_at: new Date().toISOString(),
   };
   dashboardStore.push(metric);
@@ -450,11 +525,15 @@ export {
   MAX_METRIC_NAME_LENGTH,
   MAX_SUMMARY_LIMIT,
   DEFAULT_SUMMARY_LIMIT,
+  TAG_KEY_MAX_LENGTH,
+  TAG_VALUE_MAX_LENGTH,
+  TAG_MAX_KEYS,
   parseSummaryLimit,
   parseOffsetParam,
   parseIsoDateTime,
   filterByRecordedAt,
   computeStats,
+  validateTags,
 };
 
 if (require.main === module) {

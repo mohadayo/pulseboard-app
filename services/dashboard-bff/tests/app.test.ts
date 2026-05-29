@@ -6,8 +6,12 @@ import {
   MAX_METRIC_NAME_LENGTH,
   MAX_SUMMARY_LIMIT,
   DEFAULT_SUMMARY_LIMIT,
+  TAG_KEY_MAX_LENGTH,
+  TAG_VALUE_MAX_LENGTH,
+  TAG_MAX_KEYS,
   parseSummaryLimit,
   computeStats,
+  validateTags,
 } from "../src/index";
 
 beforeEach(() => {
@@ -608,5 +612,109 @@ describe("Resource limits", () => {
     expect(res.body.error).toMatch(/too large/i);
     // store には残らない
     expect(dashboardStore).toHaveLength(0);
+  });
+});
+
+describe("POST /api/v1/dashboard/metrics tags validation", () => {
+  it("accepts a valid string→string tags object", async () => {
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 1.0, tags: { region: "us-east-1", env: "prod" } });
+    expect(res.status).toBe(201);
+    expect(res.body.tags).toEqual({ region: "us-east-1", env: "prod" });
+  });
+
+  it("accepts missing tags", async () => {
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 1.0 });
+    expect(res.status).toBe(201);
+    expect(res.body.tags).toBeUndefined();
+  });
+
+  it("accepts explicit null tags", async () => {
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 1.0, tags: null });
+    expect(res.status).toBe(201);
+  });
+
+  it("rejects an array as tags", async () => {
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 1.0, tags: ["a", "b"] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/tags must be a plain object/);
+  });
+
+  it("rejects a string as tags", async () => {
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 1.0, tags: "not-an-object" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/tags must be a plain object/);
+  });
+
+  it("rejects non-string tag values", async () => {
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 1.0, tags: { region: 123 } });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/tags\['region'\] must be a string/);
+  });
+
+  it("rejects too many tag keys", async () => {
+    const tags: Record<string, string> = {};
+    for (let i = 0; i < TAG_MAX_KEYS + 1; i++) tags[`k${i}`] = "v";
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 1.0, tags });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/at most.*keys/);
+  });
+
+  it("rejects tag keys that exceed the length limit", async () => {
+    const longKey = "k".repeat(TAG_KEY_MAX_LENGTH + 1);
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 1.0, tags: { [longKey]: "v" } });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/tags keys must be at most/);
+  });
+
+  it("rejects tag values that exceed the length limit", async () => {
+    const longValue = "v".repeat(TAG_VALUE_MAX_LENGTH + 1);
+    const res = await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 1.0, tags: { region: longValue } });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/must be at most.*characters/);
+  });
+
+  it("does not write to the store when tags are invalid", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 1.0, tags: ["bad"] });
+    expect(dashboardStore).toHaveLength(0);
+  });
+});
+
+describe("validateTags", () => {
+  it("returns undefined for undefined input", () => {
+    const r = validateTags(undefined);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBeUndefined();
+  });
+
+  it("returns undefined for null input", () => {
+    const r = validateTags(null);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBeUndefined();
+  });
+
+  it("rejects empty-string keys", () => {
+    const r = validateTags({ "": "v" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/non-empty/);
   });
 });
