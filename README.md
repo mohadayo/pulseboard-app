@@ -66,7 +66,7 @@ make down
 |--------|----------|-------------|
 | `GET` | `/health` | Health check |
 | `POST` | `/api/v1/metrics` | Record a metric |
-| `GET` | `/api/v1/metrics` | List all metrics (optional `?name=` filter) |
+| `GET` | `/api/v1/metrics` | List metrics（`?name=` / `?since=` / `?until=` ISO 8601 / `?limit=` / `?offset=`、レスポンスに `total` / `limit` / `offset`） |
 | `GET` | `/api/v1/metrics/{name}` | Get all entries for a metric |
 | `GET` | `/api/v1/metrics/{name}/latest` | Get latest value for a metric |
 | `GET` | `/api/v1/metrics/{name}/stats` | Aggregate stats for a metric (count/min/max/sum/avg/latest) |
