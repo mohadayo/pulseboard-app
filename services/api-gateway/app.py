@@ -5,7 +5,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -31,6 +31,24 @@ def _parse_max_metrics() -> int:
 
 # 1 メトリクス名あたりの最大保持件数。0 以下なら無制限。
 MAX_METRICS_PER_NAME = _parse_max_metrics()
+
+
+def _parse_positive_int_env(key: str, default: int) -> int:
+    raw = os.getenv(key, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, falling back to %d", key, raw, default)
+        return default
+    return value if value > 0 else default
+
+
+# GET /api/v1/metrics のページング既定値と上限。
+# METRICS_DEFAULT_LIMIT < METRICS_MAX_LIMIT を満たすよう正規化する。
+METRICS_DEFAULT_LIMIT = _parse_positive_int_env("METRICS_DEFAULT_LIMIT", 100)
+METRICS_MAX_LIMIT = _parse_positive_int_env("METRICS_MAX_LIMIT", 1000)
+if METRICS_DEFAULT_LIMIT > METRICS_MAX_LIMIT:
+    METRICS_DEFAULT_LIMIT = METRICS_MAX_LIMIT
 
 metrics_store: dict[str, list[dict]] = {}
 # 累積シーケンス（FIFO で古い記録を破棄しても ID が衝突しないよう、別カウンタで管理）
@@ -117,16 +135,99 @@ def create_metric(payload: MetricPayload):
     return MetricResponse(**record)
 
 
+def _parse_iso_datetime(value: str, field: str) -> datetime:
+    """ISO 8601 形式の文字列を `datetime` に変換する。
+
+    `+00:00` / `Z` 末尾どちらも受け入れる。タイムゾーン無指定（naive）の
+    入力は UTC として扱う（`recorded_at` 側も UTC ISO で保存しているため）。
+    パース失敗時は 400 を投げる。
+    """
+    raw = value.strip()
+    if not raw:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field} must not be blank",
+        )
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field} must be an ISO 8601 datetime",
+        )
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 @app.get("/api/v1/metrics")
-def list_metrics(name: Optional[str] = None):
-    # ロック内ではスナップショットを取るだけにし、レスポンス整形はロック外で実施する。
+def list_metrics(
+    name: Optional[str] = None,
+    since: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at >= since のレコードに絞り込む",
+    ),
+    until: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at <= until のレコードに絞り込む",
+    ),
+    limit: int = Query(
+        default=METRICS_DEFAULT_LIMIT,
+        ge=1,
+        le=METRICS_MAX_LIMIT,
+        description=f"返却件数上限（最大 {METRICS_MAX_LIMIT}）",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="先頭から読み飛ばす件数",
+    ),
+):
+    since_dt = _parse_iso_datetime(since, "since") if since is not None else None
+    until_dt = _parse_iso_datetime(until, "until") if until is not None else None
+    if since_dt is not None and until_dt is not None and since_dt > until_dt:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+
+    # ロック内ではスナップショットを取るだけにし、フィルタ/ページング整形はロック外で実施する。
     with _store_lock:
         if name:
             results = list(metrics_store.get(name, []))
         else:
             results = [m for group in metrics_store.values() for m in group]
-    logger.info("Listed %d metrics (filter=%s)", len(results), name)
-    return {"metrics": results, "count": len(results)}
+
+    if since_dt is not None or until_dt is not None:
+        filtered: list[dict] = []
+        for m in results:
+            try:
+                ts = datetime.fromisoformat(m["recorded_at"])
+            except ValueError:
+                # POST 時に UTC ISO で書き込んでいるため通常ここには来ないが、
+                # 万が一壊れた値があってもフィルタが落ちないよう除外扱いとする。
+                continue
+            if since_dt is not None and ts < since_dt:
+                continue
+            if until_dt is not None and ts > until_dt:
+                continue
+            filtered.append(m)
+        results = filtered
+
+    total = len(results)
+    page = results[offset:offset + limit]
+    logger.info(
+        "Listed %d/%d metrics (filter=%s, since=%s, until=%s, limit=%d, offset=%d)",
+        len(page), total, name, since, until, limit, offset,
+    )
+    return {
+        "metrics": page,
+        "count": len(page),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @app.get("/api/v1/metrics/{metric_name}/latest")
