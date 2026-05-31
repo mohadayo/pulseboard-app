@@ -89,6 +89,102 @@ def test_list_metrics_with_filter():
     assert resp.json()["metrics"][0]["name"] == "cpu"
 
 
+def test_list_metrics_response_includes_pagination_fields():
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 10})
+    resp = client.get("/api/v1/metrics")
+    data = resp.json()
+    assert "total" in data
+    assert "limit" in data
+    assert "offset" in data
+    assert data["total"] == 1
+    assert data["offset"] == 0
+    # 既定の limit は 100 以上である（環境変数で上書き可だが、デフォルトは 100）
+    assert data["limit"] >= 1
+
+
+def test_list_metrics_limit_offset_paginates():
+    for v in range(5):
+        client.post("/api/v1/metrics", json={"name": "cpu", "value": float(v)})
+    resp = client.get("/api/v1/metrics?limit=2&offset=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 2
+    assert data["limit"] == 2
+    assert data["offset"] == 1
+    assert data["total"] == 5
+    assert [m["value"] for m in data["metrics"]] == [1.0, 2.0]
+
+
+def test_list_metrics_limit_zero_is_rejected():
+    resp = client.get("/api/v1/metrics?limit=0")
+    assert resp.status_code == 422
+
+
+def test_list_metrics_negative_offset_is_rejected():
+    resp = client.get("/api/v1/metrics?offset=-1")
+    assert resp.status_code == 422
+
+
+def test_list_metrics_limit_over_max_is_rejected():
+    # 既定の上限は 1000。それを超えるリクエストは 422。
+    resp = client.get("/api/v1/metrics?limit=1001")
+    assert resp.status_code == 422
+
+
+def test_list_metrics_since_filter():
+    # 事前に 1 件投入し、その後の `recorded_at` を since に使う
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 1})
+    boundary = client.get("/api/v1/metrics").json()["metrics"][0]["recorded_at"]
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 2})
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 3})
+
+    # `params=` を使って httpx に URL エンコードを任せる
+    # （`+00:00` のような ISO 文字列を URL に直書きすると `+` が空白として解釈される）。
+    resp = client.get("/api/v1/metrics", params={"since": boundary})
+    assert resp.status_code == 200
+    data = resp.json()
+    # since 境界は >= なので 1（境界そのもの）も含む
+    assert data["total"] == 3
+
+
+def test_list_metrics_until_filter():
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 1})
+    boundary = client.get("/api/v1/metrics").json()["metrics"][0]["recorded_at"]
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 2})
+
+    resp = client.get("/api/v1/metrics", params={"until": boundary})
+    assert resp.status_code == 200
+    data = resp.json()
+    # until 境界は <= なので 1（境界そのもの）のみが対象
+    assert data["total"] == 1
+
+
+def test_list_metrics_since_greater_than_until_is_rejected():
+    resp = client.get(
+        "/api/v1/metrics?since=2030-01-02T00:00:00Z&until=2030-01-01T00:00:00Z"
+    )
+    assert resp.status_code == 400
+
+
+def test_list_metrics_invalid_since_is_rejected():
+    resp = client.get("/api/v1/metrics?since=not-a-date")
+    assert resp.status_code == 400
+
+
+def test_list_metrics_blank_since_is_rejected():
+    resp = client.get("/api/v1/metrics?since=%20%20")
+    assert resp.status_code == 400
+
+
+def test_list_metrics_accepts_zulu_suffix():
+    # 'Z' 末尾は ISO 8601 標準の UTC 表記。`fromisoformat` は Python 3.11+ で
+    # 直接 'Z' を解釈できるが、明示的な動作確認として残しておく。
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 1})
+    resp = client.get("/api/v1/metrics?since=1970-01-01T00:00:00Z")
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 1
+
+
 def test_get_latest_metric():
     client.post("/api/v1/metrics", json={"name": "disk", "value": 50})
     client.post("/api/v1/metrics", json={"name": "disk", "value": 75})
