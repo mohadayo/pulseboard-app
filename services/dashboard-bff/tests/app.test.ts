@@ -718,3 +718,78 @@ describe("validateTags", () => {
     if (!r.ok) expect(r.error).toMatch(/non-empty/);
   });
 });
+
+describe("GET /api/v1/dashboard/metrics/names", () => {
+  it("returns empty list when store is empty", async () => {
+    const res = await request(app).get("/api/v1/dashboard/metrics/names");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ names: [], count: 0 });
+  });
+
+  it("lists distinct names sorted ascending with counts", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "memory", value: 1 });
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 50 });
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 60 });
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "disk", value: 10 });
+
+    const res = await request(app).get("/api/v1/dashboard/metrics/names");
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(3);
+    expect(res.body.names.map((n: { name: string }) => n.name)).toEqual([
+      "cpu",
+      "disk",
+      "memory",
+    ]);
+    const cpu = res.body.names.find((n: { name: string }) => n.name === "cpu");
+    expect(cpu.count).toBe(2);
+    expect(cpu.latest_recorded_at).toBeDefined();
+  });
+
+  it("latest_recorded_at reflects the most recent record for that name", async () => {
+    // 異なる recorded_at の 2 件を時間順にストアへ直接挿入する
+    dashboardStore.push({
+      name: "cpu",
+      value: 10,
+      recorded_at: "2026-01-01T00:00:00.000Z",
+    });
+    dashboardStore.push({
+      name: "cpu",
+      value: 20,
+      recorded_at: "2026-06-01T12:00:00.000Z",
+    });
+    dashboardStore.push({
+      name: "cpu",
+      value: 30,
+      recorded_at: "2026-03-01T00:00:00.000Z",
+    });
+
+    const res = await request(app).get("/api/v1/dashboard/metrics/names");
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(1);
+    expect(res.body.names[0].name).toBe("cpu");
+    expect(res.body.names[0].count).toBe(3);
+    // 6 月のレコードが最新
+    expect(res.body.names[0].latest_recorded_at).toBe(
+      "2026-06-01T12:00:00.000Z",
+    );
+  });
+
+  it("handles a single record", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "only", value: 1 });
+    const res = await request(app).get("/api/v1/dashboard/metrics/names");
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(1);
+    expect(res.body.names[0].name).toBe("only");
+    expect(res.body.names[0].count).toBe(1);
+  });
+});

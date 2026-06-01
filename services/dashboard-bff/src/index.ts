@@ -366,6 +366,48 @@ app.get("/api/v1/dashboard/summary", (req: Request, res: Response) => {
   res.json(summary);
 });
 
+// 保持中のメトリクス名と件数・最終記録時刻を一覧で返す。
+// UI のドロップダウン構築や運用調査用途で、`summary?limit=最大` で全件取得
+// → クライアント側で抽出するパターンを置き換える。
+// `/:name` パターンの前に登録する（`names` が `:name` にマッチしないよう、
+// 静的セグメントを先に評価させるため）。
+app.get("/api/v1/dashboard/metrics/names", (_req: Request, res: Response) => {
+  // 1 回のスキャンで {count, latest_recorded_at_ms} を集計する。
+  // recorded_at は ISO8601 文字列なので Date.parse で比較する。
+  const summary = new Map<
+    string,
+    { count: number; latestMs: number; latestRecordedAt: string }
+  >();
+  for (const m of dashboardStore) {
+    const ts = Date.parse(m.recorded_at);
+    const existing = summary.get(m.name);
+    if (existing === undefined) {
+      // パース不能な値が万一混入していたら、ms は -Infinity として扱い、
+      // 以降の比較で常に上書きされるようにする（クライアントには文字列を返す）。
+      summary.set(m.name, {
+        count: 1,
+        latestMs: Number.isNaN(ts) ? Number.NEGATIVE_INFINITY : ts,
+        latestRecordedAt: m.recorded_at,
+      });
+      continue;
+    }
+    existing.count += 1;
+    if (!Number.isNaN(ts) && ts >= existing.latestMs) {
+      existing.latestMs = ts;
+      existing.latestRecordedAt = m.recorded_at;
+    }
+  }
+  const names = Array.from(summary.entries())
+    .map(([name, v]) => ({
+      name,
+      count: v.count,
+      latest_recorded_at: v.latestRecordedAt,
+    }))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  log("INFO", `Listed metric names: ${names.length} distinct name(s)`);
+  res.json({ names, count: names.length });
+});
+
 // 指定メトリクス名の集計統計を返す。api-gateway の
 // /api/v1/metrics/{name}/stats とレスポンス形状を揃える。
 // `/:name` より前に登録して経路の衝突を避ける。
