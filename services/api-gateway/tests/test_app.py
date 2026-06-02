@@ -1,6 +1,7 @@
 import importlib
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from fastapi.testclient import TestClient
 
 import app as app_module
@@ -396,6 +397,8 @@ def test_get_metric_stats():
     assert data["latest"] == 40.0
     assert "latest_recorded_at" in data
     assert "first_recorded_at" in data
+    # 線形補間: rank=0.5*3=1.5 → (20+30)/2 = 25.0
+    assert data["p50"] == 25.0
 
 
 def test_get_metric_stats_single_value():
@@ -405,6 +408,8 @@ def test_get_metric_stats_single_value():
     data = resp.json()
     assert data["count"] == 1
     assert data["min"] == data["max"] == data["avg"] == data["latest"] == 512.0
+    # 単一値の場合、全パーセンタイルはその値と等しい
+    assert data["p50"] == data["p95"] == data["p99"] == 512.0
 
 
 def test_get_metric_stats_not_found():
@@ -423,3 +428,26 @@ def test_get_metric_stats_does_not_shadow_other_routes():
     stats = client.get("/api/v1/metrics/disk/stats").json()
     assert stats["count"] == 2
     assert stats["latest"] == 2
+
+
+def test_get_metric_stats_percentiles_five_values():
+    # 1..5 をソート済みとして与えるとき:
+    #   p50: rank = 0.5*4 = 2  → values[2] = 3.0
+    #   p95: rank = 0.95*4 = 3.8 → values[3]*(1-0.8) + values[4]*0.8 = 4*0.2 + 5*0.8 = 4.8
+    #   p99: rank = 0.99*4 = 3.96 → 4*0.04 + 5*0.96 = 4.96
+    for v in [3.0, 1.0, 5.0, 2.0, 4.0]:  # 順不同で投入
+        client.post("/api/v1/metrics", json={"name": "lat", "value": v})
+    data = client.get("/api/v1/metrics/lat/stats").json()
+    assert data["count"] == 5
+    assert data["p50"] == 3.0
+    assert data["p95"] == pytest.approx(4.8)
+    assert data["p99"] == pytest.approx(4.96)
+
+
+def test_get_metric_stats_percentiles_monotonic():
+    # 同一値が並ぶ場合、全パーセンタイルは同値になる
+    for _ in range(10):
+        client.post("/api/v1/metrics", json={"name": "flat", "value": 42.0})
+    data = client.get("/api/v1/metrics/flat/stats").json()
+    assert data["p50"] == data["p95"] == data["p99"] == 42.0
+    assert data["min"] == data["max"] == 42.0
