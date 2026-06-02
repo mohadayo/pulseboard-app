@@ -50,6 +50,26 @@ METRICS_MAX_LIMIT = _parse_positive_int_env("METRICS_MAX_LIMIT", 1000)
 if METRICS_DEFAULT_LIMIT > METRICS_MAX_LIMIT:
     METRICS_DEFAULT_LIMIT = METRICS_MAX_LIMIT
 
+
+def _percentile(sorted_values: list[float], pct: float) -> float:
+    """Sorted values から線形補間で pct (0-100) パーセンタイル値を返す。
+
+    空入力は 0.0 を返す。要素 1 件ならそのまま返す。
+    rank = pct/100 * (n - 1) を取り、両端 (lower/upper) の重み付き平均を返す。
+    """
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    rank = (pct / 100.0) * (len(sorted_values) - 1)
+    lower = int(math.floor(rank))
+    upper = int(math.ceil(rank))
+    if lower == upper:
+        return sorted_values[lower]
+    weight = rank - lower
+    return sorted_values[lower] * (1 - weight) + sorted_values[upper] * weight
+
+
 metrics_store: dict[str, list[dict]] = {}
 # 累積シーケンス（FIFO で古い記録を破棄しても ID が衝突しないよう、別カウンタで管理）
 metrics_seq: dict[str, int] = {}
@@ -257,13 +277,17 @@ def get_metric_stats(metric_name: str):
     values = [m["value"] for m in snapshot]
     total = sum(values)
     count = len(values)
+    sorted_values = sorted(values)
     stats = {
         "name": metric_name,
         "count": count,
-        "min": min(values),
-        "max": max(values),
+        "min": sorted_values[0],
+        "max": sorted_values[-1],
         "sum": total,
         "avg": total / count,
+        "p50": _percentile(sorted_values, 50),
+        "p95": _percentile(sorted_values, 95),
+        "p99": _percentile(sorted_values, 99),
         "latest": snapshot[-1]["value"],
         "latest_recorded_at": snapshot[-1]["recorded_at"],
         "first_recorded_at": snapshot[0]["recorded_at"],
