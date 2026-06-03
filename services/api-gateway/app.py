@@ -204,13 +204,7 @@ def list_metrics(
         description="先頭から読み飛ばす件数",
     ),
 ):
-    since_dt = _parse_iso_datetime(since, "since") if since is not None else None
-    until_dt = _parse_iso_datetime(until, "until") if until is not None else None
-    if since_dt is not None and until_dt is not None and since_dt > until_dt:
-        raise HTTPException(
-            status_code=400,
-            detail="since must be less than or equal to until",
-        )
+    since_dt, until_dt = _parse_since_until(since, until)
 
     # ロック内ではスナップショットを取るだけにし、フィルタ/ページング整形はロック外で実施する。
     with _store_lock:
@@ -219,21 +213,7 @@ def list_metrics(
         else:
             results = [m for group in metrics_store.values() for m in group]
 
-    if since_dt is not None or until_dt is not None:
-        filtered: list[dict] = []
-        for m in results:
-            try:
-                ts = datetime.fromisoformat(m["recorded_at"])
-            except ValueError:
-                # POST 時に UTC ISO で書き込んでいるため通常ここには来ないが、
-                # 万が一壊れた値があってもフィルタが落ちないよう除外扱いとする。
-                continue
-            if since_dt is not None and ts < since_dt:
-                continue
-            if until_dt is not None and ts > until_dt:
-                continue
-            filtered.append(m)
-        results = filtered
+    results = _apply_time_filter(results, since_dt, until_dt)
 
     total = len(results)
     page = results[offset:offset + limit]
@@ -250,6 +230,45 @@ def list_metrics(
     }
 
 
+def _apply_time_filter(
+    records: list[dict],
+    since_dt: Optional[datetime],
+    until_dt: Optional[datetime],
+) -> list[dict]:
+    """`recorded_at` で `since`/`until` の範囲に合致するレコードに絞り込む。
+
+    `recorded_at` は POST 時に UTC ISO で書き込んでいるため通常パース失敗は
+    発生しないが、壊れた値が混入した場合は除外扱いとして安全側に倒す。
+    """
+    if since_dt is None and until_dt is None:
+        return records
+    filtered: list[dict] = []
+    for m in records:
+        try:
+            ts = datetime.fromisoformat(m["recorded_at"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        if since_dt is not None and ts < since_dt:
+            continue
+        if until_dt is not None and ts > until_dt:
+            continue
+        filtered.append(m)
+    return filtered
+
+
+def _parse_since_until(
+    since: Optional[str], until: Optional[str],
+) -> tuple[Optional[datetime], Optional[datetime]]:
+    since_dt = _parse_iso_datetime(since, "since") if since is not None else None
+    until_dt = _parse_iso_datetime(until, "until") if until is not None else None
+    if since_dt is not None and until_dt is not None and since_dt > until_dt:
+        raise HTTPException(
+            status_code=400,
+            detail="since must be less than or equal to until",
+        )
+    return since_dt, until_dt
+
+
 @app.get("/api/v1/metrics/{metric_name}/latest")
 def get_latest_metric(metric_name: str):
     with _store_lock:
@@ -262,18 +281,40 @@ def get_latest_metric(metric_name: str):
 
 
 @app.get("/api/v1/metrics/{metric_name}/stats")
-def get_metric_stats(metric_name: str):
+def get_metric_stats(
+    metric_name: str,
+    since: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at >= since のレコードに絞り込んで集計",
+    ),
+    until: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at <= until のレコードに絞り込んで集計",
+    ),
+):
     """指定メトリクス名の保持値に対する集計統計を返す。
 
     値は POST 時に有限値（Infinity/NaN を除く）であることが保証されているため、
-    min/max/sum/avg は安全に計算できる。`latest` は最新（末尾）の記録値。
+    min/max/sum/avg は安全に計算できる。`latest` は集計対象（フィルタ適用後）
+    の末尾の記録値。`since`/`until` で集計対象期間を絞り込める。
     """
+    since_dt, until_dt = _parse_since_until(since, until)
     with _store_lock:
         entries = metrics_store.get(metric_name)
         snapshot = list(entries) if entries else []
     if not snapshot:
         logger.warning("Metric not found: %s", metric_name)
         raise HTTPException(status_code=404, detail=f"No metrics found for '{metric_name}'")
+    snapshot = _apply_time_filter(snapshot, since_dt, until_dt)
+    if not snapshot:
+        logger.info(
+            "No metrics in window for '%s' (since=%s until=%s)",
+            metric_name, since, until,
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=f"No metrics found for '{metric_name}' in the given window",
+        )
     values = [m["value"] for m in snapshot]
     total = sum(values)
     count = len(values)
@@ -297,15 +338,50 @@ def get_metric_stats(metric_name: str):
 
 
 @app.get("/api/v1/metrics/{metric_name}")
-def get_metrics_by_name(metric_name: str):
+def get_metrics_by_name(
+    metric_name: str,
+    since: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at >= since のレコードに絞り込む",
+    ),
+    until: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at <= until のレコードに絞り込む",
+    ),
+    limit: int = Query(
+        default=METRICS_DEFAULT_LIMIT,
+        ge=1,
+        le=METRICS_MAX_LIMIT,
+        description=f"返却件数上限（最大 {METRICS_MAX_LIMIT}）",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="先頭から読み飛ばす件数",
+    ),
+):
+    since_dt, until_dt = _parse_since_until(since, until)
     with _store_lock:
         entries = metrics_store.get(metric_name)
         snapshot = list(entries) if entries else []
     if not snapshot:
         logger.warning("Metric not found: %s", metric_name)
         raise HTTPException(status_code=404, detail=f"No metrics found for '{metric_name}'")
-    logger.info("Returned %d metric(s) for '%s'", len(snapshot), metric_name)
-    return {"name": metric_name, "metrics": snapshot, "count": len(snapshot)}
+    snapshot = _apply_time_filter(snapshot, since_dt, until_dt)
+    total = len(snapshot)
+    page = snapshot[offset:offset + limit]
+    logger.info(
+        "Returned %d/%d metric(s) for '%s' (since=%s until=%s limit=%d offset=%d)",
+        len(page), total, metric_name, since, until, limit, offset,
+    )
+    return {
+        "name": metric_name,
+        "metrics": page,
+        "count": len(page),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @app.delete("/api/v1/metrics/{metric_name}")

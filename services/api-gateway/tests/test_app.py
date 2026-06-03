@@ -451,3 +451,117 @@ def test_get_metric_stats_percentiles_monotonic():
     data = client.get("/api/v1/metrics/flat/stats").json()
     assert data["p50"] == data["p95"] == data["p99"] == 42.0
     assert data["min"] == data["max"] == 42.0
+
+
+def test_get_metrics_by_name_pagination():
+    for v in range(5):
+        client.post("/api/v1/metrics", json={"name": "load", "value": float(v)})
+    resp = client.get("/api/v1/metrics/load?limit=2&offset=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "load"
+    assert data["total"] == 5
+    assert data["count"] == 2
+    assert data["limit"] == 2
+    assert data["offset"] == 1
+    assert [m["value"] for m in data["metrics"]] == [1.0, 2.0]
+
+
+def test_get_metrics_by_name_pagination_offset_beyond_total():
+    client.post("/api/v1/metrics", json={"name": "load", "value": 1.0})
+    resp = client.get("/api/v1/metrics/load?offset=99")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["count"] == 0
+    assert data["metrics"] == []
+
+
+def test_get_metrics_by_name_limit_zero_is_rejected():
+    client.post("/api/v1/metrics", json={"name": "load", "value": 1.0})
+    resp = client.get("/api/v1/metrics/load?limit=0")
+    assert resp.status_code == 422
+
+
+def test_get_metrics_by_name_since_until_filter():
+    from urllib.parse import quote
+    # 3 件 POST し、その時刻スタンプを使って範囲フィルタを検証する。
+    a = client.post("/api/v1/metrics", json={"name": "io", "value": 1.0}).json()
+    b = client.post("/api/v1/metrics", json={"name": "io", "value": 2.0}).json()
+    c = client.post("/api/v1/metrics", json={"name": "io", "value": 3.0}).json()
+    # recorded_at は `+00:00` を含むため、クエリ文字列に渡す際は URL エンコードする。
+    a_ts = quote(a["recorded_at"], safe="")
+    b_ts = quote(b["recorded_at"], safe="")
+    c_ts = quote(c["recorded_at"], safe="")
+    # since=b の時刻 以降 → b, c の 2 件
+    resp = client.get(f"/api/v1/metrics/io?since={b_ts}")
+    assert resp.status_code == 200
+    assert resp.json()["count"] == 2
+    # until=b の時刻 まで → a, b の 2 件
+    resp = client.get(f"/api/v1/metrics/io?until={b_ts}")
+    assert resp.status_code == 200
+    assert resp.json()["count"] == 2
+    # since=a, until=c は全件
+    resp = client.get(f"/api/v1/metrics/io?since={a_ts}&until={c_ts}")
+    assert resp.status_code == 200
+    assert resp.json()["count"] == 3
+
+
+def test_get_metrics_by_name_since_greater_than_until_rejected():
+    client.post("/api/v1/metrics", json={"name": "io", "value": 1.0})
+    resp = client.get(
+        "/api/v1/metrics/io?since=2026-01-01T00:00:00Z&until=2024-01-01T00:00:00Z"
+    )
+    assert resp.status_code == 400
+
+
+def test_get_metrics_by_name_invalid_since_rejected():
+    client.post("/api/v1/metrics", json={"name": "io", "value": 1.0})
+    resp = client.get("/api/v1/metrics/io?since=not-a-date")
+    assert resp.status_code == 400
+
+
+def test_get_metric_stats_since_until_filter():
+    from urllib.parse import quote
+    a = client.post("/api/v1/metrics", json={"name": "lat", "value": 10.0}).json()
+    b = client.post("/api/v1/metrics", json={"name": "lat", "value": 20.0}).json()
+    c = client.post("/api/v1/metrics", json={"name": "lat", "value": 30.0}).json()
+    a_ts = quote(a["recorded_at"], safe="")
+    b_ts = quote(b["recorded_at"], safe="")
+    c_ts = quote(c["recorded_at"], safe="")
+    # 全期間
+    resp = client.get("/api/v1/metrics/lat/stats")
+    assert resp.status_code == 200
+    assert resp.json()["count"] == 3
+    # since=b 以降
+    resp = client.get(f"/api/v1/metrics/lat/stats?since={b_ts}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 2
+    assert data["min"] == 20.0
+    assert data["max"] == 30.0
+    assert data["avg"] == 25.0
+    # until=a まで
+    resp = client.get(f"/api/v1/metrics/lat/stats?until={a_ts}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 1
+    assert data["min"] == 10.0
+    assert data["max"] == 10.0
+    # since=a, until=c は全件
+    resp = client.get(f"/api/v1/metrics/lat/stats?since={a_ts}&until={c_ts}")
+    assert resp.status_code == 200
+    assert resp.json()["count"] == 3
+
+
+def test_get_metric_stats_empty_window_returns_404():
+    # データはあるが範囲指定で 0 件のときは 404
+    client.post("/api/v1/metrics", json={"name": "lat", "value": 1.0})
+    resp = client.get("/api/v1/metrics/lat/stats?since=2099-01-01T00:00:00Z")
+    assert resp.status_code == 404
+
+
+def test_get_metric_stats_invalid_since_rejected():
+    client.post("/api/v1/metrics", json={"name": "lat", "value": 1.0})
+    resp = client.get("/api/v1/metrics/lat/stats?since=not-a-date")
+    assert resp.status_code == 400
