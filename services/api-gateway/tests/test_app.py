@@ -565,3 +565,70 @@ def test_get_metric_stats_invalid_since_rejected():
     client.post("/api/v1/metrics", json={"name": "lat", "value": 1.0})
     resp = client.get("/api/v1/metrics/lat/stats?since=not-a-date")
     assert resp.status_code == 400
+
+
+# --- GET /api/v1/metrics/names ---
+
+def test_list_metric_names_empty():
+    resp = client.get("/api/v1/metrics/names")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == {"names": [], "count": 0}
+
+
+def test_list_metric_names_returns_distinct_names_sorted():
+    # 投入順は cpu→mem→cpu→disk だが、レスポンスは name 昇順 (cpu, disk, mem)。
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 1.0})
+    client.post("/api/v1/metrics", json={"name": "mem", "value": 2.0})
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 3.0})
+    client.post("/api/v1/metrics", json={"name": "disk", "value": 4.0})
+    resp = client.get("/api/v1/metrics/names")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 3
+    names = data["names"]
+    assert [n["name"] for n in names] == ["cpu", "disk", "mem"]
+    cpu = next(n for n in names if n["name"] == "cpu")
+    assert cpu["count"] == 2
+    disk = next(n for n in names if n["name"] == "disk")
+    assert disk["count"] == 1
+    mem = next(n for n in names if n["name"] == "mem")
+    assert mem["count"] == 1
+    # 各 name に latest_recorded_at が含まれる
+    assert cpu["latest_recorded_at"] is not None
+    assert disk["latest_recorded_at"] is not None
+    assert mem["latest_recorded_at"] is not None
+
+
+def test_list_metric_names_latest_recorded_at_is_last_post():
+    # POST 順 == ロック内 append 順なので、末尾の recorded_at が latest になる。
+    r1 = client.post("/api/v1/metrics", json={"name": "lat", "value": 1.0})
+    r2 = client.post("/api/v1/metrics", json={"name": "lat", "value": 2.0})
+    first_at = r1.json()["recorded_at"]
+    second_at = r2.json()["recorded_at"]
+    resp = client.get("/api/v1/metrics/names")
+    assert resp.status_code == 200
+    lat = next(n for n in resp.json()["names"] if n["name"] == "lat")
+    assert lat["count"] == 2
+    assert lat["latest_recorded_at"] == second_at
+    assert lat["latest_recorded_at"] != first_at or second_at == first_at
+
+
+def test_list_metric_names_does_not_collide_with_path_param():
+    # `/api/v1/metrics/names` が `/api/v1/metrics/{metric_name}` (metric_name="names")
+    # に誤マッチしないこと。誤マッチした場合は格納されていないため 404 になるが、
+    # 本エンドポイントは静的セグメントを先に登録しているため 200 を返す。
+    resp = client.get("/api/v1/metrics/names")
+    assert resp.status_code == 200
+    assert resp.json() == {"names": [], "count": 0}
+
+
+def test_list_metric_names_excludes_deleted_metrics():
+    client.post("/api/v1/metrics", json={"name": "tmp", "value": 1.0})
+    client.post("/api/v1/metrics", json={"name": "keep", "value": 2.0})
+    # tmp を削除すると names には現れない
+    del_resp = client.delete("/api/v1/metrics/tmp")
+    assert del_resp.status_code == 200
+    resp = client.get("/api/v1/metrics/names")
+    assert resp.status_code == 200
+    assert [n["name"] for n in resp.json()["names"]] == ["keep"]
