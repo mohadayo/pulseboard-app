@@ -337,6 +337,39 @@ def get_metric_stats(
     return stats
 
 
+@app.get("/api/v1/metrics/names")
+def list_metric_names():
+    """保持中のメトリクス名一覧と件数・最終記録時刻を返す。
+
+    `GET /api/v1/metrics?limit=最大` 経由でクライアント側集計するパターンを
+    置き換えるための軽量エンドポイント。各 name について以下を返す:
+
+    - ``name``: メトリクス名
+    - ``count``: 保持中のレコード件数（FIFO eviction 後の現存数）
+    - ``latest_recorded_at``: 末尾レコードの ``recorded_at``。POST 時点で
+      ロック内 append しているため、エントリの末尾が常に最新。
+
+    返却順は ``name`` 昇順。経路衝突回避のため、``/{metric_name}`` 系の
+    登録より前に定義する必要がある（FastAPI は登録順で評価する）。
+    """
+    with _store_lock:
+        # ロック内ではキー一覧と各エントリの (件数, 末尾の recorded_at) を
+        # スナップショットするのみ。リスト本体は複製しない（O(N) 回避）。
+        snapshot: list[tuple[str, int, Optional[str]]] = []
+        for name, entries in metrics_store.items():
+            if entries:
+                snapshot.append((name, len(entries), entries[-1].get("recorded_at")))
+            else:
+                snapshot.append((name, 0, None))
+    snapshot.sort(key=lambda t: t[0])
+    names = [
+        {"name": n, "count": c, "latest_recorded_at": ts}
+        for (n, c, ts) in snapshot
+    ]
+    logger.info("Listed %d distinct metric name(s)", len(names))
+    return {"names": names, "count": len(names)}
+
+
 @app.get("/api/v1/metrics/{metric_name}")
 def get_metrics_by_name(
     metric_name: str,
