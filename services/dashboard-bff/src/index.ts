@@ -193,9 +193,32 @@ interface DashboardStats {
   max: number;
   sum: number;
   avg: number;
+  p50: number;
+  p95: number;
+  p99: number;
   latest: number;
   latest_recorded_at: string;
   first_recorded_at: string;
+}
+
+// 線形補間パーセンタイル。`sortedValues` は昇順、`pct` は 0〜100。
+// 空入力は 0、要素 1 件はそのまま返す。上流 api-gateway の `_percentile` と
+// 同じロジックで揃えて、BFF と直接 api-gateway の集計結果がズレないようにする。
+function percentile(sortedValues: number[], pct: number): number {
+  if (sortedValues.length === 0) {
+    return 0;
+  }
+  if (sortedValues.length === 1) {
+    return sortedValues[0];
+  }
+  const rank = (pct / 100) * (sortedValues.length - 1);
+  const lower = Math.floor(rank);
+  const upper = Math.ceil(rank);
+  if (lower === upper) {
+    return sortedValues[lower];
+  }
+  const weight = rank - lower;
+  return sortedValues[lower] * (1 - weight) + sortedValues[upper] * weight;
 }
 
 // 指定メトリクス名の保持値に対する集計統計を計算する。
@@ -253,13 +276,19 @@ function computeStats(name: string, metrics: DashboardMetric[]): DashboardStats 
   const values = metrics.map((m) => m.value);
   const count = values.length;
   const sum = values.reduce((acc, v) => acc + v, 0);
+  // `Math.min(...arr)` / `Math.max(...arr)` は要素数が多いとスタック上限
+  // に達する処理系がある（V8 でも引数数に上限）。reduce ベースで安全に評価する。
+  const sorted = [...values].sort((a, b) => a - b);
   return {
     name,
     count,
-    min: Math.min(...values),
-    max: Math.max(...values),
+    min: sorted[0],
+    max: sorted[count - 1],
     sum,
     avg: sum / count,
+    p50: percentile(sorted, 50),
+    p95: percentile(sorted, 95),
+    p99: percentile(sorted, 99),
     latest: metrics[count - 1].value,
     latest_recorded_at: metrics[count - 1].recorded_at,
     first_recorded_at: metrics[0].recorded_at,
@@ -409,17 +438,61 @@ app.get("/api/v1/dashboard/metrics/names", (_req: Request, res: Response) => {
 });
 
 // 指定メトリクス名の集計統計を返す。api-gateway の
-// /api/v1/metrics/{name}/stats とレスポンス形状を揃える。
+// /api/v1/metrics/{name}/stats とレスポンス形状・受け付けクエリを揃える。
+// `?since=` / `?until=` (ISO8601) で集計対象期間を絞り込める。
 // `/:name` より前に登録して経路の衝突を避ける。
 app.get(
   "/api/v1/dashboard/metrics/:name/stats",
   (req: Request, res: Response) => {
     // Express のルートパラメータは実行時には常に string。
     const name = String(req.params.name);
-    const filtered = dashboardStore.filter((m) => m.name === name);
-    if (filtered.length === 0) {
+
+    const sinceParsed = parseIsoDateTime(req.query.since, "since");
+    if (sinceParsed.error !== null) {
+      log("WARN", `Invalid since param: ${JSON.stringify(req.query.since)}`);
+      res.status(400).json({ error: sinceParsed.error });
+      return;
+    }
+    const untilParsed = parseIsoDateTime(req.query.until, "until");
+    if (untilParsed.error !== null) {
+      log("WARN", `Invalid until param: ${JSON.stringify(req.query.until)}`);
+      res.status(400).json({ error: untilParsed.error });
+      return;
+    }
+    if (
+      sinceParsed.value !== null &&
+      untilParsed.value !== null &&
+      sinceParsed.value.getTime() > untilParsed.value.getTime()
+    ) {
+      log(
+        "WARN",
+        `Invalid range: since=${req.query.since} > until=${req.query.until}`,
+      );
+      res
+        .status(400)
+        .json({ error: "since must be less than or equal to until" });
+      return;
+    }
+
+    const filteredByName = dashboardStore.filter((m) => m.name === name);
+    if (filteredByName.length === 0) {
       log("WARN", `Metric not found: ${name}`);
       res.status(404).json({ error: `No metrics found for '${name}'` });
+      return;
+    }
+    const filtered = filterByRecordedAt(
+      filteredByName,
+      sinceParsed.value,
+      untilParsed.value,
+    );
+    if (filtered.length === 0) {
+      log(
+        "INFO",
+        `No metrics in window for '${name}' (since=${req.query.since} until=${req.query.until})`,
+      );
+      res.status(404).json({
+        error: `No metrics found for '${name}' in the given window`,
+      });
       return;
     }
     const stats = computeStats(name, filtered);
@@ -575,6 +648,7 @@ export {
   parseIsoDateTime,
   filterByRecordedAt,
   computeStats,
+  percentile,
   validateTags,
 };
 
