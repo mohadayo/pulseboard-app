@@ -11,6 +11,7 @@ import {
   TAG_MAX_KEYS,
   parseSummaryLimit,
   computeStats,
+  percentile,
   validateTags,
 } from "../src/index";
 
@@ -513,6 +514,164 @@ describe("computeStats helper", () => {
     expect(stats.max).toBe(5);
     expect(stats.sum).toBe(0);
     expect(stats.avg).toBe(0);
+  });
+
+  it("computes p50/p95/p99 over sorted values", () => {
+    const ts = new Date().toISOString();
+    // 1〜100 の連続値、rank=pct/100*(n-1)=pct/100*99 で線形補間。
+    // p50: rank=49.5, sorted[49]=50, sorted[50]=51 → 50.5
+    // p95: rank=94.05, sorted[94]=95, sorted[95]=96 → 95*0.95+96*0.05=95.05
+    // p99: rank=98.01, sorted[98]=99, sorted[99]=100 → 99*0.99+100*0.01=99.01
+    const metrics = Array.from({ length: 100 }, (_, i) => ({
+      name: "cpu",
+      value: i + 1,
+      recorded_at: ts,
+    }));
+    const stats = computeStats("cpu", metrics);
+    expect(stats.count).toBe(100);
+    expect(stats.min).toBe(1);
+    expect(stats.max).toBe(100);
+    expect(stats.p50).toBeCloseTo(50.5, 4);
+    expect(stats.p95).toBeCloseTo(95.05, 4);
+    expect(stats.p99).toBeCloseTo(99.01, 4);
+  });
+
+  it("p50/p95/p99 equal the only value for a single record", () => {
+    const ts = new Date().toISOString();
+    const stats = computeStats("solo", [
+      { name: "solo", value: 42, recorded_at: ts },
+    ]);
+    expect(stats.p50).toBe(42);
+    expect(stats.p95).toBe(42);
+    expect(stats.p99).toBe(42);
+  });
+
+  it("computes percentiles correctly even when the input is unsorted", () => {
+    const ts = new Date().toISOString();
+    // POST 順は時系列順だが、value 自体は降順で入る想定
+    const stats = computeStats("cpu", [
+      { name: "cpu", value: 100, recorded_at: ts },
+      { name: "cpu", value: 50, recorded_at: ts },
+      { name: "cpu", value: 1, recorded_at: ts },
+    ]);
+    expect(stats.min).toBe(1);
+    expect(stats.max).toBe(100);
+    // sorted=[1,50,100], rank(0.5*2)=1 → p50=50
+    expect(stats.p50).toBe(50);
+  });
+});
+
+describe("percentile helper", () => {
+  it("returns 0 for empty input", () => {
+    expect(percentile([], 50)).toBe(0);
+    expect(percentile([], 99)).toBe(0);
+  });
+
+  it("returns the only element for single-value input", () => {
+    expect(percentile([7], 50)).toBe(7);
+    expect(percentile([7], 95)).toBe(7);
+    expect(percentile([7], 99)).toBe(7);
+  });
+
+  it("returns min/max for pct=0/100", () => {
+    expect(percentile([1, 2, 3, 4, 5], 0)).toBe(1);
+    expect(percentile([1, 2, 3, 4, 5], 100)).toBe(5);
+  });
+
+  it("linearly interpolates between neighbors", () => {
+    // sorted=[10,20,30,40], rank=0.5*3=1.5 → 20*0.5 + 30*0.5 = 25
+    expect(percentile([10, 20, 30, 40], 50)).toBe(25);
+  });
+});
+
+describe("GET /api/v1/dashboard/metrics/:name/stats — with since/until", () => {
+  it("accepts since/until in the response window", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 10 });
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/stats?since=2000-01-01T00:00:00Z",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(1);
+  });
+
+  it("rejects invalid since", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 10 });
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/stats?since=not-a-date",
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("since");
+  });
+
+  it("rejects invalid until", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 10 });
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/stats?until=not-a-date",
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("until");
+  });
+
+  it("rejects since > until", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 10 });
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/stats?since=2030-01-01T00:00:00Z&until=2020-01-01T00:00:00Z",
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("since must be less than or equal to until");
+  });
+
+  it("returns 404 when window excludes all records", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 10 });
+    // recorded_at は now 付近。`until` を遠い過去にして 0 件にする。
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/stats?until=2000-01-01T00:00:00Z",
+    );
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain("in the given window");
+  });
+
+  it("includes p50/p95/p99 in the response payload", async () => {
+    for (const v of [10, 20, 30, 40, 50]) {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "cpu", value: v });
+    }
+    const res = await request(app).get("/api/v1/dashboard/metrics/cpu/stats");
+    expect(res.status).toBe(200);
+    expect(res.body.p50).toBeDefined();
+    expect(res.body.p95).toBeDefined();
+    expect(res.body.p99).toBeDefined();
+    expect(typeof res.body.p50).toBe("number");
+  });
+
+  it("filters records by since (after newer values are recorded)", async () => {
+    // 1 件記録 → 短い sleep → さらに 1 件記録。`since` を「2件目の前」に設定。
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 100 });
+    await new Promise((r) => setTimeout(r, 50));
+    const midpoint = new Date().toISOString();
+    await new Promise((r) => setTimeout(r, 50));
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 200 });
+    const res = await request(app).get(
+      `/api/v1/dashboard/metrics/cpu/stats?since=${encodeURIComponent(midpoint)}`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(1);
+    expect(res.body.latest).toBe(200);
   });
 });
 
