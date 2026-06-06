@@ -501,6 +501,31 @@ app.get(
   }
 );
 
+// 指定メトリクス名の最新 1 件だけを返す。
+// 一覧 (`/:name`) と集計 (`/:name/stats`) と並んで、リアルタイム表示・状態バッジ等で
+// 「いま最新の値だけ知りたい」ケース向けの軽量エンドポイント。dashboardStore は
+// POST 受理順に push されており、name で filter した配列の末尾が常に最新となる。
+// 経路衝突回避のため `/:name` より前に登録する（Express は登録順で評価する）。
+app.get(
+  "/api/v1/dashboard/metrics/:name/latest",
+  (req: Request, res: Response) => {
+    const name = String(req.params.name);
+    let latest: DashboardMetric | null = null;
+    for (const m of dashboardStore) {
+      if (m.name === name) {
+        latest = m;
+      }
+    }
+    if (latest === null) {
+      log("WARN", `Metric not found: ${name}`);
+      res.status(404).json({ error: `No metrics found for '${name}'` });
+      return;
+    }
+    log("INFO", `Returned latest metric for '${name}' (value=${latest.value})`);
+    res.json(latest);
+  }
+);
+
 app.get(
   "/api/v1/dashboard/metrics/:name",
   (req: Request, res: Response) => {
