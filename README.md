@@ -159,6 +159,8 @@ The response includes `count`, `sum`, `avg`, `min`, `max`, `std_dev`,
 | `POST` | `/api/v1/dashboard/metrics` | Add a dashboard metric |
 | `GET` | `/api/v1/dashboard/summary` | Get dashboard summary（既定で最新 50 件、`?limit=` で件数指定可） |
 | `GET` | `/api/v1/dashboard/metrics/{name}` | Get metrics by name |
+| `GET` | `/api/v1/dashboard/metrics/{name}/latest` | 指定 name の最新 1 件だけを返す軽量エンドポイント（リアルタイム表示・状態バッジ用、データ無しは `404`） |
+| `GET` | `/api/v1/dashboard/metrics/{name}/stats` | 指定 name の集計統計（count/min/max/sum/avg/p50/p95/p99/latest）|
 | `DELETE` | `/api/v1/dashboard/metrics` | 全メトリクスを破棄（運用時のクリーンアップ用） |
 | `DELETE` | `/api/v1/dashboard/metrics/{name}` | 名前指定で破棄（該当なしは `404`） |
 
