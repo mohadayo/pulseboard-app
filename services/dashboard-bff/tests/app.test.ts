@@ -486,6 +486,106 @@ describe("GET /api/v1/dashboard/metrics/:name/stats", () => {
   });
 });
 
+describe("GET /api/v1/dashboard/metrics/:name/latest", () => {
+  it("returns the most recent metric for a name", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 10 });
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 20 });
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 30 });
+    // 別名のメトリクスは末尾後に投入されても影響しないこと（直近の cpu=30 を返す）
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "mem", value: 1024 });
+
+    const res = await request(app).get("/api/v1/dashboard/metrics/cpu/latest");
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe("cpu");
+    expect(res.body.value).toBe(30);
+    expect(res.body.recorded_at).toBeDefined();
+  });
+
+  it("preserves tags on the returned metric", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 50, tags: { host: "web-1", env: "prod" } });
+
+    const res = await request(app).get("/api/v1/dashboard/metrics/cpu/latest");
+    expect(res.status).toBe(200);
+    expect(res.body.value).toBe(50);
+    expect(res.body.tags).toEqual({ host: "web-1", env: "prod" });
+  });
+
+  it("returns 404 for unknown metric", async () => {
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/unknown/latest",
+    );
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain("unknown");
+  });
+
+  it("returns 404 when other names exist but the requested one does not", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "mem", value: 1 });
+    const res = await request(app).get("/api/v1/dashboard/metrics/cpu/latest");
+    expect(res.status).toBe(404);
+  });
+
+  it("does not collide with the /:name list route", async () => {
+    // 名前が "latest" のメトリクスを登録しても、/:name/latest は単一最新値を返し、
+    // /:name は一覧を返す（経路が衝突しないことの確認）。
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "latest", value: 1 });
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "latest", value: 2 });
+
+    const latestRes = await request(app).get(
+      "/api/v1/dashboard/metrics/latest/latest",
+    );
+    expect(latestRes.status).toBe(200);
+    expect(latestRes.body.name).toBe("latest");
+    expect(latestRes.body.value).toBe(2);
+    // /latest 単発は配列 (metrics) ではなく単一の DashboardMetric を返すこと
+    expect(latestRes.body.metrics).toBeUndefined();
+    expect(latestRes.body.total).toBeUndefined();
+
+    const listRes = await request(app).get("/api/v1/dashboard/metrics/latest");
+    expect(listRes.status).toBe(200);
+    expect(Array.isArray(listRes.body.metrics)).toBe(true);
+    expect(listRes.body.metrics).toHaveLength(2);
+    expect(listRes.body.name).toBe("latest");
+  });
+
+  it("does not collide with the /:name/stats route", async () => {
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "cpu", value: 42 });
+
+    const statsRes = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/stats",
+    );
+    expect(statsRes.status).toBe(200);
+    // /stats は集計フィールドを持ち、value は最上位に存在しない
+    expect(statsRes.body.count).toBe(1);
+    expect(statsRes.body.value).toBeUndefined();
+
+    const latestRes = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/latest",
+    );
+    expect(latestRes.status).toBe(200);
+    // /latest は DashboardMetric 形状（value + recorded_at）で count を持たない
+    expect(latestRes.body.value).toBe(42);
+    expect(latestRes.body.count).toBeUndefined();
+  });
+});
+
 describe("computeStats helper", () => {
   it("computes stats over provided metrics in order", () => {
     const now = new Date().toISOString();
