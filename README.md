@@ -162,7 +162,7 @@ The response includes `count`, `sum`, `avg`, `min`, `max`, `std_dev`,
 | `GET` | `/api/v1/dashboard/metrics/{name}/latest` | 指定 name の最新 1 件だけを返す軽量エンドポイント（リアルタイム表示・状態バッジ用、データ無しは `404`） |
 | `GET` | `/api/v1/dashboard/metrics/{name}/stats` | 指定 name の集計統計（count/min/max/sum/avg/p50/p95/p99/latest）|
 | `DELETE` | `/api/v1/dashboard/metrics` | 全メトリクスを破棄（運用時のクリーンアップ用） |
-| `DELETE` | `/api/v1/dashboard/metrics/{name}` | 名前指定で破棄（該当なしは `404`） |
+| `DELETE` | `/api/v1/dashboard/metrics/{name}` | 名前指定で破棄。`?since=` / `?until=` (ISO 8601) で `recorded_at` の範囲を絞り込んだ部分削除も可能（該当なしは `404`） |
 
 ストアと入力サイズには次の上限がある（メモリ枯渇による DoS リスクを抑える目的）：
 

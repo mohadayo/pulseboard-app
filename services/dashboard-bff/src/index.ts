@@ -617,25 +617,101 @@ app.delete("/api/v1/dashboard/metrics", (_req: Request, res: Response) => {
 });
 
 // 名前指定で破棄する。存在しない名前は 404。
+// `?since=` / `?until=` (ISO8601) を指定すると `recorded_at` が範囲内の
+// レコードのみが削除対象になる（age-based cleanup 用途）。
 app.delete(
   "/api/v1/dashboard/metrics/:name",
   (req: Request, res: Response) => {
-    const { name } = req.params;
+    const name = String(req.params.name);
+
+    const sinceParsed = parseIsoDateTime(req.query.since, "since");
+    if (sinceParsed.error !== null) {
+      log("WARN", `Invalid since param: ${JSON.stringify(req.query.since)}`);
+      res.status(400).json({ error: sinceParsed.error });
+      return;
+    }
+    const untilParsed = parseIsoDateTime(req.query.until, "until");
+    if (untilParsed.error !== null) {
+      log("WARN", `Invalid until param: ${JSON.stringify(req.query.until)}`);
+      res.status(400).json({ error: untilParsed.error });
+      return;
+    }
+    if (
+      sinceParsed.value !== null &&
+      untilParsed.value !== null &&
+      sinceParsed.value.getTime() > untilParsed.value.getTime()
+    ) {
+      log(
+        "WARN",
+        `Invalid range: since=${req.query.since} > until=${req.query.until}`,
+      );
+      res
+        .status(400)
+        .json({ error: "since must be less than or equal to until" });
+      return;
+    }
+
+    const hasTimeFilter =
+      sinceParsed.value !== null || untilParsed.value !== null;
+    const sinceMs =
+      sinceParsed.value !== null ? sinceParsed.value.getTime() : null;
+    const untilMs =
+      untilParsed.value !== null ? untilParsed.value.getTime() : null;
+
     const before = dashboardStore.length;
     // 同名分だけ in-place で除去（split + reassign は export 参照を壊すため避ける）
     for (let i = dashboardStore.length - 1; i >= 0; i--) {
-      if (dashboardStore[i].name === name) {
-        dashboardStore.splice(i, 1);
+      const m = dashboardStore[i];
+      if (m.name !== name) {
+        continue;
       }
+      if (hasTimeFilter) {
+        const ts = Date.parse(m.recorded_at);
+        if (Number.isNaN(ts)) {
+          // 壊れた recorded_at は時間フィルタ指定時には削除対象から外す
+          // (filterByRecordedAt と同じ「安全側」の振る舞いに揃える)
+          continue;
+        }
+        if (sinceMs !== null && ts < sinceMs) continue;
+        if (untilMs !== null && ts > untilMs) continue;
+      }
+      dashboardStore.splice(i, 1);
     }
     const deleted = before - dashboardStore.length;
     if (deleted === 0) {
-      log("WARN", `Delete miss: no metrics matched name='${name}'`);
-      res.status(404).json({ error: `No metrics found for '${name}'` });
+      log(
+        "WARN",
+        `Delete miss: no metrics matched name='${name}'` +
+          (hasTimeFilter
+            ? ` in window since=${req.query.since} until=${req.query.until}`
+            : ""),
+      );
+      const errMsg = hasTimeFilter
+        ? `No metrics found for '${name}' in the given window`
+        : `No metrics found for '${name}'`;
+      res.status(404).json({ error: errMsg });
       return;
     }
-    log("INFO", `Deleted ${deleted} metric(s) for name='${name}'`);
-    res.json({ deleted, name });
+    log(
+      "INFO",
+      `Deleted ${deleted} metric(s) for name='${name}'` +
+        (hasTimeFilter
+          ? ` (since=${req.query.since}, until=${req.query.until})`
+          : ""),
+    );
+    const responseBody: {
+      deleted: number;
+      name: string;
+      since?: string;
+      until?: string;
+    } = { deleted, name };
+    if (typeof req.query.since === "string" && req.query.since.length > 0) {
+      responseBody.since = req.query.since;
+    }
+    if (typeof req.query.until === "string" && req.query.until.length > 0) {
+      responseBody.until = req.query.until;
+    }
+    res.json(responseBody);
   }
 );
 

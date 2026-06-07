@@ -829,6 +829,110 @@ describe("DELETE /api/v1/dashboard/metrics/:name", () => {
   });
 });
 
+describe("DELETE /api/v1/dashboard/metrics/:name — with since/until", () => {
+  function seedAt(name: string, value: number, recordedAt: string): void {
+    dashboardStore.push({ name, value, recorded_at: recordedAt });
+  }
+
+  it("only deletes records whose recorded_at falls within [since, until]", async () => {
+    seedAt("cpu", 1, "2024-01-01T00:00:00.000Z");
+    seedAt("cpu", 2, "2024-06-01T00:00:00.000Z");
+    seedAt("cpu", 3, "2024-12-01T00:00:00.000Z");
+    seedAt("mem", 99, "2024-06-01T00:00:00.000Z");
+
+    const res = await request(app).delete(
+      "/api/v1/dashboard/metrics/cpu?since=2024-03-01T00:00:00.000Z&until=2024-09-01T00:00:00.000Z",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(1);
+    expect(res.body.name).toBe("cpu");
+    expect(res.body.since).toBe("2024-03-01T00:00:00.000Z");
+    expect(res.body.until).toBe("2024-09-01T00:00:00.000Z");
+
+    // value=2 のみが消え、1 と 3 と mem は残る
+    const remaining = dashboardStore.map((m) => `${m.name}:${m.value}`).sort();
+    expect(remaining).toEqual(["cpu:1", "cpu:3", "mem:99"]);
+  });
+
+  it("supports since-only filter (delete everything newer than the cutoff)", async () => {
+    seedAt("cpu", 1, "2024-01-01T00:00:00.000Z");
+    seedAt("cpu", 2, "2024-12-01T00:00:00.000Z");
+
+    const res = await request(app).delete(
+      "/api/v1/dashboard/metrics/cpu?since=2024-06-01T00:00:00.000Z",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(1);
+    expect(res.body.since).toBe("2024-06-01T00:00:00.000Z");
+    expect(res.body.until).toBeUndefined();
+    expect(dashboardStore).toHaveLength(1);
+    expect(dashboardStore[0].value).toBe(1);
+  });
+
+  it("supports until-only filter (purge older-than-cutoff records)", async () => {
+    seedAt("cpu", 1, "2024-01-01T00:00:00.000Z");
+    seedAt("cpu", 2, "2024-12-01T00:00:00.000Z");
+
+    const res = await request(app).delete(
+      "/api/v1/dashboard/metrics/cpu?until=2024-06-01T00:00:00.000Z",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(1);
+    expect(res.body.until).toBe("2024-06-01T00:00:00.000Z");
+    expect(res.body.since).toBeUndefined();
+    expect(dashboardStore).toHaveLength(1);
+    expect(dashboardStore[0].value).toBe(2);
+  });
+
+  it("returns 404 with an in-window message when nothing matches the time range", async () => {
+    seedAt("cpu", 1, "2024-01-01T00:00:00.000Z");
+
+    const res = await request(app).delete(
+      "/api/v1/dashboard/metrics/cpu?since=2025-01-01T00:00:00.000Z",
+    );
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/in the given window/i);
+    // 既存レコードは温存される
+    expect(dashboardStore).toHaveLength(1);
+  });
+
+  it("rejects invalid since with 400", async () => {
+    seedAt("cpu", 1, "2024-01-01T00:00:00.000Z");
+
+    const res = await request(app).delete(
+      "/api/v1/dashboard/metrics/cpu?since=not-a-date",
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/since/);
+    expect(dashboardStore).toHaveLength(1);
+  });
+
+  it("rejects since > until with 400", async () => {
+    seedAt("cpu", 1, "2024-01-01T00:00:00.000Z");
+
+    const res = await request(app).delete(
+      "/api/v1/dashboard/metrics/cpu?since=2024-06-01T00:00:00.000Z&until=2024-03-01T00:00:00.000Z",
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/since.*less than or equal to until/);
+    expect(dashboardStore).toHaveLength(1);
+  });
+
+  it("preserves legacy behavior when no time filter is given (delete all matches)", async () => {
+    seedAt("cpu", 1, "2024-01-01T00:00:00.000Z");
+    seedAt("cpu", 2, "2024-12-01T00:00:00.000Z");
+    seedAt("mem", 9, "2024-06-01T00:00:00.000Z");
+
+    const res = await request(app).delete("/api/v1/dashboard/metrics/cpu");
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(2);
+    expect(res.body.since).toBeUndefined();
+    expect(res.body.until).toBeUndefined();
+    expect(dashboardStore).toHaveLength(1);
+    expect(dashboardStore[0].name).toBe("mem");
+  });
+});
+
 describe("Resource limits", () => {
   it("exports a positive default MAX_DASHBOARD_METRICS", () => {
     expect(MAX_DASHBOARD_METRICS).toBeGreaterThan(0);
