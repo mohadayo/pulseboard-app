@@ -505,18 +505,82 @@ app.get(
 // 一覧 (`/:name`) と集計 (`/:name/stats`) と並んで、リアルタイム表示・状態バッジ等で
 // 「いま最新の値だけ知りたい」ケース向けの軽量エンドポイント。dashboardStore は
 // POST 受理順に push されており、name で filter した配列の末尾が常に最新となる。
+// `?since=` / `?until=`（ISO 8601）が指定されると、`recorded_at` が窓内にある
+// 観測のうち最新を返す（`/stats` の窓フィルタと整合）。
 // 経路衝突回避のため `/:name` より前に登録する（Express は登録順で評価する）。
 app.get(
   "/api/v1/dashboard/metrics/:name/latest",
   (req: Request, res: Response) => {
     const name = String(req.params.name);
+
+    const sinceParsed = parseIsoDateTime(req.query.since, "since");
+    if (sinceParsed.error !== null) {
+      log("WARN", `Invalid since param: ${JSON.stringify(req.query.since)}`);
+      res.status(400).json({ error: sinceParsed.error });
+      return;
+    }
+    const untilParsed = parseIsoDateTime(req.query.until, "until");
+    if (untilParsed.error !== null) {
+      log("WARN", `Invalid until param: ${JSON.stringify(req.query.until)}`);
+      res.status(400).json({ error: untilParsed.error });
+      return;
+    }
+    if (
+      sinceParsed.value !== null &&
+      untilParsed.value !== null &&
+      sinceParsed.value.getTime() > untilParsed.value.getTime()
+    ) {
+      log(
+        "WARN",
+        `Invalid range: since=${req.query.since} > until=${req.query.until}`,
+      );
+      res
+        .status(400)
+        .json({ error: "since must be less than or equal to until" });
+      return;
+    }
+
+    const hasTimeFilter =
+      sinceParsed.value !== null || untilParsed.value !== null;
+
     let latest: DashboardMetric | null = null;
+    let nameSeen = false;
     for (const m of dashboardStore) {
-      if (m.name === name) {
-        latest = m;
+      if (m.name !== name) {
+        continue;
       }
+      nameSeen = true;
+      if (hasTimeFilter) {
+        const ts = Date.parse(m.recorded_at);
+        if (Number.isNaN(ts)) {
+          continue;
+        }
+        if (
+          sinceParsed.value !== null &&
+          ts < sinceParsed.value.getTime()
+        ) {
+          continue;
+        }
+        if (
+          untilParsed.value !== null &&
+          ts > untilParsed.value.getTime()
+        ) {
+          continue;
+        }
+      }
+      latest = m;
     }
     if (latest === null) {
+      if (hasTimeFilter && nameSeen) {
+        log(
+          "INFO",
+          `No metrics in window for '${name}' (since=${req.query.since} until=${req.query.until})`,
+        );
+        res.status(404).json({
+          error: `No metrics found for '${name}' in the given window`,
+        });
+        return;
+      }
       log("WARN", `Metric not found: ${name}`);
       res.status(404).json({ error: `No metrics found for '${name}'` });
       return;
