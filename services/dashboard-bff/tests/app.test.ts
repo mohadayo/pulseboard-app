@@ -584,6 +584,102 @@ describe("GET /api/v1/dashboard/metrics/:name/latest", () => {
     expect(latestRes.body.value).toBe(42);
     expect(latestRes.body.count).toBeUndefined();
   });
+
+  // ---- since/until フィルタ ----
+
+  it("returns the latest metric inside the since/until window", async () => {
+    // dashboardStore に直接 push して recorded_at をテスト時刻で固定する
+    // （POST 経由だと new Date() が走り、ピンポイントの境界テストが書けない）
+    dashboardStore.push(
+      { name: "cpu", value: 10, recorded_at: "2025-01-01T00:00:00.000Z" },
+      { name: "cpu", value: 20, recorded_at: "2025-01-02T00:00:00.000Z" },
+      { name: "cpu", value: 30, recorded_at: "2025-01-03T00:00:00.000Z" },
+    );
+    // 2025-01-01 ～ 2025-01-02 の窓 → 末尾は value=20
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/latest" +
+        "?since=2025-01-01T00:00:00.000Z&until=2025-01-02T00:00:00.000Z",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.value).toBe(20);
+    expect(res.body.recorded_at).toBe("2025-01-02T00:00:00.000Z");
+  });
+
+  it("respects since boundary as inclusive", async () => {
+    dashboardStore.push(
+      { name: "cpu", value: 10, recorded_at: "2025-01-01T00:00:00.000Z" },
+      { name: "cpu", value: 20, recorded_at: "2025-01-02T00:00:00.000Z" },
+    );
+    // since が 2025-01-02 ピッタリなら value=20 のみが対象
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/latest?since=2025-01-02T00:00:00.000Z",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.value).toBe(20);
+  });
+
+  it("respects until boundary as inclusive", async () => {
+    dashboardStore.push(
+      { name: "cpu", value: 10, recorded_at: "2025-01-01T00:00:00.000Z" },
+      { name: "cpu", value: 20, recorded_at: "2025-01-02T00:00:00.000Z" },
+    );
+    // until が 2025-01-01 ピッタリなら value=10 のみが対象
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/latest?until=2025-01-01T00:00:00.000Z",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.value).toBe(10);
+  });
+
+  it("returns 404 with in-window message when the name exists but no metric is in window", async () => {
+    dashboardStore.push(
+      { name: "cpu", value: 10, recorded_at: "2025-01-01T00:00:00.000Z" },
+    );
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/latest?since=2026-01-01T00:00:00.000Z",
+    );
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain("in the given window");
+  });
+
+  it("returns 404 without in-window suffix when the name itself does not exist", async () => {
+    dashboardStore.push(
+      { name: "cpu", value: 10, recorded_at: "2025-01-01T00:00:00.000Z" },
+    );
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/unknown/latest?since=2025-01-01T00:00:00.000Z",
+    );
+    expect(res.status).toBe(404);
+    expect(res.body.error).not.toContain("in the given window");
+  });
+
+  it("returns 400 when since > until", async () => {
+    dashboardStore.push(
+      { name: "cpu", value: 10, recorded_at: "2025-01-01T00:00:00.000Z" },
+    );
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/latest" +
+        "?since=2025-01-02T00:00:00.000Z&until=2025-01-01T00:00:00.000Z",
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("since must be less than or equal to until");
+  });
+
+  it("returns 400 for invalid since", async () => {
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/latest?since=not-a-date",
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("since");
+  });
+
+  it("returns 400 for invalid until", async () => {
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/latest?until=not-a-date",
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("until");
+  });
 });
 
 describe("computeStats helper", () => {
