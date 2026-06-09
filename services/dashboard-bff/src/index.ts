@@ -272,6 +272,82 @@ function filterByRecordedAt(
   });
 }
 
+// bucket_seconds クエリパラメータをパースする。
+// - 未指定: 60 を返す（既定 1 分バケット。analytics-api と揃える）
+// - 1〜86400 の整数文字列のみ受理（"1.5" / "abc" / "0" / "-1" は無効）
+// - 無効値の場合は null を返す（呼び出し側が 400 を返す責務）
+function parseBucketSecondsParam(raw: unknown): number | null {
+  if (raw === undefined) {
+    return 60;
+  }
+  if (typeof raw !== "string" || raw.length === 0) {
+    return null;
+  }
+  if (!/^[0-9]+$/.test(raw)) {
+    return null;
+  }
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 86400) {
+    return null;
+  }
+  return parsed;
+}
+
+interface TimeseriesBucket {
+  bucket_start: string; // ISO8601 文字列
+  total: number;
+  min: number;
+  max: number;
+  avg: number;
+  p50: number;
+  p95: number;
+  p99: number;
+}
+
+// recorded_at を `bucketSeconds` 秒幅の半開区間バケットにビニングして集約する。
+// 観測のないバケットは結果に含めない（スパース表現）。並び順は bucket_start 昇順。
+// recorded_at がパース不能なレコードはスキップする（filterByRecordedAt と同じ
+// 「安全側」の振る舞いに揃える）。analytics-api の timeseries と percentile 計算
+// （線形補間）を共有するため、`percentile` ヘルパをそのまま使う。
+function bucketByTime(
+  metrics: DashboardMetric[],
+  bucketSeconds: number,
+): TimeseriesBucket[] {
+  const bucketMs = bucketSeconds * 1000;
+  const buckets = new Map<number, number[]>();
+  for (const m of metrics) {
+    const ts = Date.parse(m.recorded_at);
+    if (Number.isNaN(ts)) {
+      continue;
+    }
+    const bucketStart = Math.floor(ts / bucketMs) * bucketMs;
+    let arr = buckets.get(bucketStart);
+    if (arr === undefined) {
+      arr = [];
+      buckets.set(bucketStart, arr);
+    }
+    arr.push(m.value);
+  }
+  const result: TimeseriesBucket[] = [];
+  const sortedStarts = Array.from(buckets.keys()).sort((a, b) => a - b);
+  for (const bucketStart of sortedStarts) {
+    const values = buckets.get(bucketStart)!;
+    const sorted = [...values].sort((a, b) => a - b);
+    const sum = values.reduce((acc, v) => acc + v, 0);
+    result.push({
+      bucket_start: new Date(bucketStart).toISOString(),
+      total: values.length,
+      min: sorted[0],
+      max: sorted[sorted.length - 1],
+      avg: sum / values.length,
+      p50: percentile(sorted, 50),
+      p95: percentile(sorted, 95),
+      p99: percentile(sorted, 99),
+    });
+  }
+  return result;
+}
+
 function computeStats(name: string, metrics: DashboardMetric[]): DashboardStats {
   const values = metrics.map((m) => m.value);
   const count = values.length;
@@ -590,6 +666,94 @@ app.get(
   }
 );
 
+// 指定メトリクス名を時系列バケットに集約して返す。
+// `bucket_seconds` 幅の半開区間 [bucket_start, bucket_start + bucket_seconds) で
+// recorded_at をビニングし、各バケットで count / min / max / avg / p50 / p95 / p99 を返す。
+// 観測のないバケットは結果に含めない（スパース表現）。
+// `?since=` / `?until=` (ISO8601) で集計対象期間を絞り込める。
+// `/:name` より前に登録して経路の衝突を避ける（`names` / `stats` / `latest` と同じ理由）。
+app.get(
+  "/api/v1/dashboard/metrics/:name/timeseries",
+  (req: Request, res: Response) => {
+    const name = String(req.params.name);
+
+    const sinceParsed = parseIsoDateTime(req.query.since, "since");
+    if (sinceParsed.error !== null) {
+      log("WARN", `Invalid since param: ${JSON.stringify(req.query.since)}`);
+      res.status(400).json({ error: sinceParsed.error });
+      return;
+    }
+    const untilParsed = parseIsoDateTime(req.query.until, "until");
+    if (untilParsed.error !== null) {
+      log("WARN", `Invalid until param: ${JSON.stringify(req.query.until)}`);
+      res.status(400).json({ error: untilParsed.error });
+      return;
+    }
+    if (
+      sinceParsed.value !== null &&
+      untilParsed.value !== null &&
+      sinceParsed.value.getTime() > untilParsed.value.getTime()
+    ) {
+      log(
+        "WARN",
+        `Invalid range: since=${req.query.since} > until=${req.query.until}`,
+      );
+      res
+        .status(400)
+        .json({ error: "since must be less than or equal to until" });
+      return;
+    }
+
+    // bucket_seconds は 1〜86400 (1 日) の整数のみ受理。analytics-api と同範囲。
+    const bucketSeconds = parseBucketSecondsParam(req.query.bucket_seconds);
+    if (bucketSeconds === null) {
+      log(
+        "WARN",
+        `Invalid bucket_seconds param: ${JSON.stringify(req.query.bucket_seconds)}`,
+      );
+      res.status(400).json({
+        error:
+          "bucket_seconds must be a positive integer between 1 and 86400",
+      });
+      return;
+    }
+
+    const filteredByName = dashboardStore.filter((m) => m.name === name);
+    if (filteredByName.length === 0) {
+      log("WARN", `Metric not found: ${name}`);
+      res.status(404).json({ error: `No metrics found for '${name}'` });
+      return;
+    }
+    const filtered = filterByRecordedAt(
+      filteredByName,
+      sinceParsed.value,
+      untilParsed.value,
+    );
+    if (filtered.length === 0) {
+      log(
+        "INFO",
+        `No metrics in window for '${name}' (since=${req.query.since} until=${req.query.until})`,
+      );
+      res.status(404).json({
+        error: `No metrics found for '${name}' in the given window`,
+      });
+      return;
+    }
+
+    const buckets = bucketByTime(filtered, bucketSeconds);
+    log(
+      "INFO",
+      `Computed timeseries for '${name}' (count=${buckets.length}, bucket_seconds=${bucketSeconds})`,
+    );
+    res.json({
+      name,
+      bucket_seconds: bucketSeconds,
+      count: buckets.length,
+      buckets,
+    });
+  }
+);
+
 app.get(
   "/api/v1/dashboard/metrics/:name",
   (req: Request, res: Response) => {
@@ -811,9 +975,11 @@ export {
   parseSummaryLimit,
   parseOffsetParam,
   parseIsoDateTime,
+  parseBucketSecondsParam,
   filterByRecordedAt,
   computeStats,
   percentile,
+  bucketByTime,
   validateTags,
 };
 
