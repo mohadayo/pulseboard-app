@@ -1252,3 +1252,220 @@ describe("GET /api/v1/dashboard/metrics/names", () => {
     expect(res.body.names[0].count).toBe(1);
   });
 });
+
+describe("GET /api/v1/dashboard/metrics/:name/timeseries", () => {
+  // recorded_at は POST 時にサーバ側で `new Date().toISOString()` がセットされる。
+  // バケット境界の検証には固定タイムスタンプが必要なため、テスト中はストアに直接 push する。
+  // src/index.ts が export している `dashboardStore` を直接操作することで、
+  // 既存テスト（POST → GET 経由）と同じ in-memory store にバイパス挿入できる。
+  function seed(name: string, value: number, isoTs: string) {
+    dashboardStore.push({ name, value, recorded_at: isoTs });
+  }
+
+  it("returns 404 when the metric name does not exist", async () => {
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/missing/timeseries",
+    );
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain("No metrics found for 'missing'");
+  });
+
+  it("returns 404 when no records fall within the since/until window", async () => {
+    seed("cpu", 10, "2026-01-01T00:00:00.000Z");
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries?since=2027-01-01T00:00:00Z",
+    );
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain("in the given window");
+  });
+
+  it("buckets records by the default 60s width and returns aggregates", async () => {
+    // [12:00:10, 12:00:30, 12:00:50] → bucket_start 12:00:00
+    // [12:01:30, 12:01:45] → bucket_start 12:01:00
+    seed("cpu", 10, "2026-06-01T12:00:10.000Z");
+    seed("cpu", 30, "2026-06-01T12:00:30.000Z");
+    seed("cpu", 50, "2026-06-01T12:00:50.000Z");
+    seed("cpu", 70, "2026-06-01T12:01:30.000Z");
+    seed("cpu", 90, "2026-06-01T12:01:45.000Z");
+
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe("cpu");
+    expect(res.body.bucket_seconds).toBe(60);
+    expect(res.body.count).toBe(2);
+
+    const b0 = res.body.buckets[0];
+    expect(b0.bucket_start).toBe("2026-06-01T12:00:00.000Z");
+    expect(b0.total).toBe(3);
+    expect(b0.min).toBe(10);
+    expect(b0.max).toBe(50);
+    expect(b0.avg).toBe(30);
+    expect(b0.p50).toBe(30);
+
+    const b1 = res.body.buckets[1];
+    expect(b1.bucket_start).toBe("2026-06-01T12:01:00.000Z");
+    expect(b1.total).toBe(2);
+    expect(b1.min).toBe(70);
+    expect(b1.max).toBe(90);
+    expect(b1.avg).toBe(80);
+  });
+
+  it("returns buckets sorted by bucket_start ascending even if records arrive out of order", async () => {
+    seed("cpu", 1, "2026-06-01T12:02:00.000Z");
+    seed("cpu", 1, "2026-06-01T12:00:00.000Z");
+    seed("cpu", 1, "2026-06-01T12:01:00.000Z");
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries",
+    );
+    expect(res.status).toBe(200);
+    const starts = res.body.buckets.map(
+      (b: { bucket_start: string }) => b.bucket_start,
+    );
+    expect(starts).toEqual([
+      "2026-06-01T12:00:00.000Z",
+      "2026-06-01T12:01:00.000Z",
+      "2026-06-01T12:02:00.000Z",
+    ]);
+  });
+
+  it("skips empty buckets (sparse representation)", async () => {
+    seed("cpu", 1, "2026-06-01T12:00:00.000Z");
+    seed("cpu", 1, "2026-06-01T12:10:00.000Z"); // 10 分後
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries",
+    );
+    expect(res.status).toBe(200);
+    // 観測のあるバケットだけ返る (12:00 と 12:10 の 2 つ)
+    expect(res.body.count).toBe(2);
+  });
+
+  it("uses a custom bucket_seconds value", async () => {
+    seed("cpu", 1, "2026-06-01T12:00:00.000Z");
+    seed("cpu", 1, "2026-06-01T12:00:09.000Z"); // 10 秒バケット A
+    seed("cpu", 1, "2026-06-01T12:00:10.000Z"); // 10 秒バケット B
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries?bucket_seconds=10",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.bucket_seconds).toBe(10);
+    expect(res.body.count).toBe(2);
+    expect(res.body.buckets[0].total).toBe(2);
+    expect(res.body.buckets[1].total).toBe(1);
+  });
+
+  it("computes percentiles per bucket using linear interpolation", async () => {
+    // 単一バケットに [10, 20, 30, 40, 50] → p50=30, p95=48, p99=49.6
+    // analytics-api timeseries の percentile と同実装の回帰
+    const base = "2026-06-01T12:00:00.000Z";
+    seed("svc", 10, base);
+    seed("svc", 20, "2026-06-01T12:00:10.000Z");
+    seed("svc", 30, "2026-06-01T12:00:20.000Z");
+    seed("svc", 40, "2026-06-01T12:00:30.000Z");
+    seed("svc", 50, "2026-06-01T12:00:40.000Z");
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/svc/timeseries",
+    );
+    const b = res.body.buckets[0];
+    expect(b.total).toBe(5);
+    expect(b.min).toBe(10);
+    expect(b.max).toBe(50);
+    expect(b.p50).toBe(30);
+    expect(b.p95).toBeCloseTo(48, 5);
+    expect(b.p99).toBeCloseTo(49.6, 5);
+  });
+
+  it("filters by since (inclusive)", async () => {
+    seed("cpu", 1, "2026-06-01T12:00:00.000Z");
+    seed("cpu", 1, "2026-06-01T12:05:00.000Z");
+    seed("cpu", 1, "2026-06-01T12:10:00.000Z");
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries?since=2026-06-01T12:05:00Z",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(2);
+  });
+
+  it("filters by until (inclusive)", async () => {
+    seed("cpu", 1, "2026-06-01T12:00:00.000Z");
+    seed("cpu", 1, "2026-06-01T12:05:00.000Z");
+    seed("cpu", 1, "2026-06-01T12:10:00.000Z");
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries?until=2026-06-01T12:05:00Z",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(2);
+  });
+
+  it("rejects bucket_seconds < 1", async () => {
+    seed("cpu", 1, "2026-06-01T12:00:00.000Z");
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries?bucket_seconds=0",
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("bucket_seconds");
+  });
+
+  it("rejects bucket_seconds > 86400", async () => {
+    seed("cpu", 1, "2026-06-01T12:00:00.000Z");
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries?bucket_seconds=86401",
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("bucket_seconds");
+  });
+
+  it("rejects non-integer bucket_seconds", async () => {
+    seed("cpu", 1, "2026-06-01T12:00:00.000Z");
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries?bucket_seconds=1.5",
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects negative bucket_seconds", async () => {
+    seed("cpu", 1, "2026-06-01T12:00:00.000Z");
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries?bucket_seconds=-60",
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects since > until", async () => {
+    seed("cpu", 1, "2026-06-01T12:00:00.000Z");
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries?since=2026-06-02T00:00:00Z&until=2026-06-01T00:00:00Z",
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("since must be less than or equal to until");
+  });
+
+  it("ignores records of other metric names", async () => {
+    seed("cpu", 10, "2026-06-01T12:00:00.000Z");
+    seed("mem", 999, "2026-06-01T12:00:00.000Z");
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.buckets[0].total).toBe(1);
+    expect(res.body.buckets[0].min).toBe(10);
+    expect(res.body.buckets[0].max).toBe(10);
+  });
+
+  it("does not collide with /:name route (timeseries word in URL is treated as a subroute)", async () => {
+    // `/:name/timeseries` の登録順により、`timeseries` という名前のメトリクスを
+    // 投入しても catch-all `/:name` ではなく timeseries エンドポイントに到達する。
+    // POST 経由だと recorded_at が今の時刻になりウィンドウ判定が不安定なため、
+    // ストアに直接挿入。`/:name/timeseries` ルートは "timeseries" を URL の
+    // 最終セグメントとして扱うため、メトリクス名 "timeseries" でもエラーにはならず
+    // バケット集計が返る点を確認する。
+    seed("timeseries", 5, "2026-06-01T12:00:00.000Z");
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/timeseries/timeseries",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe("timeseries");
+    expect(res.body.buckets[0].total).toBe(1);
+  });
+});
