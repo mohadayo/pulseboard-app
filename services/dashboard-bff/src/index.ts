@@ -513,6 +513,111 @@ app.get("/api/v1/dashboard/metrics/names", (_req: Request, res: Response) => {
   res.json({ names, count: names.length });
 });
 
+// 保持中メトリクスの件数のみを返す軽量エンドポイント。
+// `summary?limit=1` のようにレコード本体を取得しなくても件数だけ知りたい UI
+// （バッジ表示・ヘッダ集計・ページャ初期化等）向け。
+// `?name=` で完全一致絞り込み、`?since=` / `?until=` (ISO8601) で時間範囲を絞り込める。
+// `by_name` は観測実績のある名前のみを返し、count 0 の名前は埋めない（軽量化）。
+// `/:name` より前に登録して経路の衝突を避ける。
+app.get("/api/v1/dashboard/metrics/count", (req: Request, res: Response) => {
+  const sinceParsed = parseIsoDateTime(req.query.since, "since");
+  if (sinceParsed.error !== null) {
+    log("WARN", `Invalid since param: ${JSON.stringify(req.query.since)}`);
+    res.status(400).json({ error: sinceParsed.error });
+    return;
+  }
+  const untilParsed = parseIsoDateTime(req.query.until, "until");
+  if (untilParsed.error !== null) {
+    log("WARN", `Invalid until param: ${JSON.stringify(req.query.until)}`);
+    res.status(400).json({ error: untilParsed.error });
+    return;
+  }
+  if (
+    sinceParsed.value !== null &&
+    untilParsed.value !== null &&
+    sinceParsed.value.getTime() > untilParsed.value.getTime()
+  ) {
+    log(
+      "WARN",
+      `Invalid range: since=${req.query.since} > until=${req.query.until}`,
+    );
+    res
+      .status(400)
+      .json({ error: "since must be less than or equal to until" });
+    return;
+  }
+
+  // `name` クエリは未指定 / 単一文字列のみ受理。配列や空文字は 400。
+  let nameFilter: string | null = null;
+  if (req.query.name !== undefined) {
+    if (typeof req.query.name !== "string" || req.query.name.length === 0) {
+      log("WARN", `Invalid name param: ${JSON.stringify(req.query.name)}`);
+      res.status(400).json({ error: "name must be a non-empty string" });
+      return;
+    }
+    if (req.query.name.length > MAX_METRIC_NAME_LENGTH) {
+      log(
+        "WARN",
+        `Name param too long: ${req.query.name.length} > ${MAX_METRIC_NAME_LENGTH}`,
+      );
+      res.status(400).json({
+        error: `name must be at most ${MAX_METRIC_NAME_LENGTH} characters`,
+      });
+      return;
+    }
+    nameFilter = req.query.name;
+  }
+
+  const sinceIso =
+    sinceParsed.value !== null ? sinceParsed.value.toISOString() : null;
+  const untilIso =
+    untilParsed.value !== null ? untilParsed.value.toISOString() : null;
+
+  let total = 0;
+  const byName = new Map<string, number>();
+  for (const m of dashboardStore) {
+    if (nameFilter !== null && m.name !== nameFilter) {
+      continue;
+    }
+    if (sinceParsed.value !== null || untilParsed.value !== null) {
+      const ts = Date.parse(m.recorded_at);
+      if (Number.isNaN(ts)) {
+        continue;
+      }
+      if (sinceParsed.value !== null && ts < sinceParsed.value.getTime()) {
+        continue;
+      }
+      if (untilParsed.value !== null && ts > untilParsed.value.getTime()) {
+        continue;
+      }
+    }
+    total += 1;
+    byName.set(m.name, (byName.get(m.name) ?? 0) + 1);
+  }
+
+  const by_name: Record<string, number> = {};
+  // 名前のソートは決定論的にする（クライアントが diff を取りやすいように）。
+  const sortedNames = Array.from(byName.keys()).sort((a, b) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  for (const n of sortedNames) {
+    by_name[n] = byName.get(n) ?? 0;
+  }
+
+  log(
+    "INFO",
+    `Dashboard count: total=${total} distinct_names=${sortedNames.length}` +
+      ` name=${nameFilter ?? ""} since=${sinceIso ?? ""} until=${untilIso ?? ""}`,
+  );
+  res.json({
+    total,
+    by_name,
+    name: nameFilter,
+    since: sinceIso,
+    until: untilIso,
+  });
+});
+
 // 指定メトリクス名の集計統計を返す。api-gateway の
 // /api/v1/metrics/{name}/stats とレスポンス形状・受け付けクエリを揃える。
 // `?since=` / `?until=` (ISO8601) で集計対象期間を絞り込める。

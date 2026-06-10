@@ -1469,3 +1469,132 @@ describe("GET /api/v1/dashboard/metrics/:name/timeseries", () => {
     expect(res.body.buckets[0].total).toBe(1);
   });
 });
+
+describe("GET /api/v1/dashboard/metrics/count", () => {
+  it("returns zero counts on empty store", async () => {
+    const res = await request(app).get("/api/v1/dashboard/metrics/count");
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(0);
+    expect(res.body.by_name).toEqual({});
+    expect(res.body.name).toBeNull();
+    expect(res.body.since).toBeNull();
+    expect(res.body.until).toBeNull();
+  });
+
+  it("aggregates total and by_name across distinct names", async () => {
+    dashboardStore.push(
+      { name: "cpu", value: 1, recorded_at: "2026-06-01T00:00:00.000Z" },
+      { name: "cpu", value: 2, recorded_at: "2026-06-01T00:01:00.000Z" },
+      { name: "mem", value: 3, recorded_at: "2026-06-01T00:02:00.000Z" },
+    );
+    const res = await request(app).get("/api/v1/dashboard/metrics/count");
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(3);
+    expect(res.body.by_name).toEqual({ cpu: 2, mem: 1 });
+    // 名前は決定論的にソートされる
+    expect(Object.keys(res.body.by_name)).toEqual(["cpu", "mem"]);
+  });
+
+  it("filters by name exactly (no partial match)", async () => {
+    dashboardStore.push(
+      { name: "cpu", value: 1, recorded_at: "2026-06-01T00:00:00.000Z" },
+      { name: "cpu-extra", value: 2, recorded_at: "2026-06-01T00:00:00.000Z" },
+    );
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/count?name=cpu",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.name).toBe("cpu");
+    expect(res.body.by_name).toEqual({ cpu: 1 });
+  });
+
+  it("filters by since/until window", async () => {
+    dashboardStore.push(
+      { name: "cpu", value: 1, recorded_at: "2026-06-01T00:00:00.000Z" },
+      { name: "cpu", value: 2, recorded_at: "2026-06-01T01:00:00.000Z" },
+      { name: "cpu", value: 3, recorded_at: "2026-06-01T02:00:00.000Z" },
+    );
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/count?since=2026-06-01T00:30:00.000Z&until=2026-06-01T01:30:00.000Z",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.by_name).toEqual({ cpu: 1 });
+    expect(res.body.since).toBe("2026-06-01T00:30:00.000Z");
+    expect(res.body.until).toBe("2026-06-01T01:30:00.000Z");
+  });
+
+  it("returns 400 on invalid since", async () => {
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/count?since=not-a-date",
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 on invalid until", async () => {
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/count?until=garbage",
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when since > until", async () => {
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/count?since=2026-06-02T00:00:00.000Z&until=2026-06-01T00:00:00.000Z",
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/since must be less than or equal to until/);
+  });
+
+  it("returns 400 on blank name", async () => {
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/count?name=",
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 on overlong name", async () => {
+    const longName = "x".repeat(MAX_METRIC_NAME_LENGTH + 1);
+    const res = await request(app).get(
+      `/api/v1/dashboard/metrics/count?name=${longName}`,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("does not collide with /:name route (count is treated as static)", async () => {
+    // /:name の前に登録しているため、メトリクス名 "count" の詳細を取りたい場合は
+    // /:name 側にマッチしないが、テストとしては count エンドポイントが優先される
+    // ことを明示する（衝突しない）。
+    dashboardStore.push({
+      name: "count",
+      value: 1,
+      recorded_at: "2026-06-01T00:00:00.000Z",
+    });
+    const res = await request(app).get("/api/v1/dashboard/metrics/count");
+    expect(res.status).toBe(200);
+    // count エンドポイントなので by_name に "count" が含まれる
+    expect(res.body.by_name).toEqual({ count: 1 });
+    expect(res.body.total).toBe(1);
+  });
+
+  it("skips records with unparseable recorded_at when a time filter is given", async () => {
+    dashboardStore.push(
+      { name: "cpu", value: 1, recorded_at: "2026-06-01T00:00:00.000Z" },
+      { name: "cpu", value: 2, recorded_at: "not-an-iso-string" },
+    );
+    const filtered = await request(app).get(
+      "/api/v1/dashboard/metrics/count?since=2025-01-01T00:00:00.000Z",
+    );
+    expect(filtered.status).toBe(200);
+    // 時間フィルタありの場合、パース不能 recorded_at は除外される
+    expect(filtered.body.total).toBe(1);
+
+    const unfiltered = await request(app).get(
+      "/api/v1/dashboard/metrics/count",
+    );
+    expect(unfiltered.status).toBe(200);
+    // 時間フィルタなしの場合は両方カウント
+    expect(unfiltered.body.total).toBe(2);
+  });
+});
