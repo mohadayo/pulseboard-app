@@ -476,7 +476,41 @@ app.get("/api/v1/dashboard/summary", (req: Request, res: Response) => {
 // → クライアント側で抽出するパターンを置き換える。
 // `/:name` パターンの前に登録する（`names` が `:name` にマッチしないよう、
 // 静的セグメントを先に評価させるため）。
-app.get("/api/v1/dashboard/metrics/names", (_req: Request, res: Response) => {
+app.get("/api/v1/dashboard/metrics/names", (req: Request, res: Response) => {
+  // `?since=` / `?until=` (ISO8601) が指定されると `recorded_at` が範囲内の
+  // 観測のみを集計する。`/count` や `/:name/stats` の窓フィルタと整合する。
+  const sinceParsed = parseIsoDateTime(req.query.since, "since");
+  if (sinceParsed.error !== null) {
+    log("WARN", `Invalid since param: ${JSON.stringify(req.query.since)}`);
+    res.status(400).json({ error: sinceParsed.error });
+    return;
+  }
+  const untilParsed = parseIsoDateTime(req.query.until, "until");
+  if (untilParsed.error !== null) {
+    log("WARN", `Invalid until param: ${JSON.stringify(req.query.until)}`);
+    res.status(400).json({ error: untilParsed.error });
+    return;
+  }
+  if (
+    sinceParsed.value !== null &&
+    untilParsed.value !== null &&
+    sinceParsed.value.getTime() > untilParsed.value.getTime()
+  ) {
+    log(
+      "WARN",
+      `Invalid range: since=${req.query.since} > until=${req.query.until}`,
+    );
+    res
+      .status(400)
+      .json({ error: "since must be less than or equal to until" });
+    return;
+  }
+
+  const hasTimeFilter =
+    sinceParsed.value !== null || untilParsed.value !== null;
+  const sinceMs = sinceParsed.value !== null ? sinceParsed.value.getTime() : null;
+  const untilMs = untilParsed.value !== null ? untilParsed.value.getTime() : null;
+
   // 1 回のスキャンで {count, latest_recorded_at_ms} を集計する。
   // recorded_at は ISO8601 文字列なので Date.parse で比較する。
   const summary = new Map<
@@ -485,6 +519,19 @@ app.get("/api/v1/dashboard/metrics/names", (_req: Request, res: Response) => {
   >();
   for (const m of dashboardStore) {
     const ts = Date.parse(m.recorded_at);
+    if (hasTimeFilter) {
+      // パース不能な値は時間フィルタ下では集計対象外とする（窓内/窓外を判定できないため）。
+      // 窓フィルタなしの場合は従来通り全件を集計対象に含める。
+      if (Number.isNaN(ts)) {
+        continue;
+      }
+      if (sinceMs !== null && ts < sinceMs) {
+        continue;
+      }
+      if (untilMs !== null && ts > untilMs) {
+        continue;
+      }
+    }
     const existing = summary.get(m.name);
     if (existing === undefined) {
       // パース不能な値が万一混入していたら、ms は -Infinity として扱い、
@@ -509,8 +556,16 @@ app.get("/api/v1/dashboard/metrics/names", (_req: Request, res: Response) => {
       latest_recorded_at: v.latestRecordedAt,
     }))
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  log("INFO", `Listed metric names: ${names.length} distinct name(s)`);
-  res.json({ names, count: names.length });
+  const sinceIso =
+    sinceParsed.value !== null ? sinceParsed.value.toISOString() : null;
+  const untilIso =
+    untilParsed.value !== null ? untilParsed.value.toISOString() : null;
+  log(
+    "INFO",
+    `Listed metric names: ${names.length} distinct name(s)` +
+      ` since=${sinceIso ?? ""} until=${untilIso ?? ""}`,
+  );
+  res.json({ names, count: names.length, since: sinceIso, until: untilIso });
 });
 
 // 保持中メトリクスの件数のみを返す軽量エンドポイント。

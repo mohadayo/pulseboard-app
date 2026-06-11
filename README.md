@@ -158,6 +158,7 @@ The response includes `count`, `sum`, `avg`, `min`, `max`, `std_dev`,
 | `GET` | `/health` | Health check |
 | `POST` | `/api/v1/dashboard/metrics` | Add a dashboard metric |
 | `GET` | `/api/v1/dashboard/summary` | Get dashboard summary（既定で最新 50 件、`?limit=` で件数指定可） |
+| `GET` | `/api/v1/dashboard/metrics/names` | 保持中の distinct な metric 名一覧を `{name, count, latest_recorded_at}` 形式で昇順に返す。`?since=` / `?until=` (ISO8601) で `recorded_at` の範囲内に観測のある名前のみに絞り込み可能（フィルタドロップダウンの populate 用途） |
 | `GET` | `/api/v1/dashboard/metrics/count` | 保持中件数のみを返す軽量エンドポイント。`?name=` / `?since=` / `?until=` (ISO8601) で絞り込み。レスポンスは `{ total, by_name, name, since, until }` でレコード本体を含まない |
 | `GET` | `/api/v1/dashboard/metrics/{name}` | Get metrics by name |
 | `GET` | `/api/v1/dashboard/metrics/{name}/latest` | 指定 name の最新 1 件だけを返す軽量エンドポイント（リアルタイム表示・状態バッジ用、データ無しは `404`） |
@@ -190,6 +191,21 @@ curl http://localhost:8002/api/v1/dashboard/summary
 # 直近 10 件
 curl "http://localhost:8002/api/v1/dashboard/summary?limit=10"
 ```
+
+GET `/api/v1/dashboard/metrics/names` のレスポンスは `{ names: [{name, count, latest_recorded_at}], count, since, until }`。`since` / `until` は ISO8601 文字列で、`recorded_at` がその範囲内にある観測のみを集計対象にする：
+
+```bash
+# 全 distinct name（フィルタなし。since=null / until=null）
+curl http://localhost:8002/api/v1/dashboard/metrics/names
+
+# 直近 1 時間に観測のあった name のみ（GNU date 例）
+curl "http://localhost:8002/api/v1/dashboard/metrics/names?since=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
+
+# 期間指定（since と until を両方指定）
+curl "http://localhost:8002/api/v1/dashboard/metrics/names?since=2026-06-01T00:00:00Z&until=2026-06-11T00:00:00Z"
+```
+
+`since` / `until` の片方または両方を指定すると、`recorded_at` がパースできないレコードは集計対象外（窓内外を判定できないため）になる。フィルタを一切指定しない場合は従来通り全レコードを集計する。`since` が `until` より大きい場合は `400`、ISO8601 として解釈できない値も `400`。
 
 ## Development
 
