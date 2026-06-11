@@ -1182,7 +1182,13 @@ describe("GET /api/v1/dashboard/metrics/names", () => {
   it("returns empty list when store is empty", async () => {
     const res = await request(app).get("/api/v1/dashboard/metrics/names");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ names: [], count: 0 });
+    // 既定（フィルタ無し）の since / until は null として返す
+    expect(res.body).toEqual({
+      names: [],
+      count: 0,
+      since: null,
+      until: null,
+    });
   });
 
   it("lists distinct names sorted ascending with counts", async () => {
@@ -1250,6 +1256,122 @@ describe("GET /api/v1/dashboard/metrics/names", () => {
     expect(res.body.count).toBe(1);
     expect(res.body.names[0].name).toBe("only");
     expect(res.body.names[0].count).toBe(1);
+  });
+
+  describe("since / until filtering", () => {
+    function seed(name: string, value: number, isoTs: string) {
+      dashboardStore.push({ name, value, recorded_at: isoTs });
+    }
+
+    it("filters out names with no records in the window", async () => {
+      // 1 月のみ "old", 6 月のみ "new" → since=2026-04-01 で "new" のみが残る
+      seed("old", 1, "2026-01-01T00:00:00.000Z");
+      seed("new", 2, "2026-06-01T00:00:00.000Z");
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/names?since=2026-04-01T00:00:00.000Z",
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.count).toBe(1);
+      expect(res.body.names[0].name).toBe("new");
+      expect(res.body.names[0].count).toBe(1);
+      expect(res.body.since).toBe("2026-04-01T00:00:00.000Z");
+      expect(res.body.until).toBeNull();
+    });
+
+    it("reflects only in-window records in per-name count and latest_recorded_at", async () => {
+      // "cpu" を 1 月・3 月・6 月に push。since=2026-02-01, until=2026-04-01 だと
+      // 3 月の 1 件のみが残り、count=1, latest_recorded_at=3 月になる。
+      seed("cpu", 10, "2026-01-01T00:00:00.000Z");
+      seed("cpu", 20, "2026-03-01T00:00:00.000Z");
+      seed("cpu", 30, "2026-06-01T00:00:00.000Z");
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/names" +
+          "?since=2026-02-01T00:00:00.000Z&until=2026-04-01T00:00:00.000Z",
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.count).toBe(1);
+      expect(res.body.names[0].name).toBe("cpu");
+      expect(res.body.names[0].count).toBe(1);
+      expect(res.body.names[0].latest_recorded_at).toBe(
+        "2026-03-01T00:00:00.000Z",
+      );
+      expect(res.body.since).toBe("2026-02-01T00:00:00.000Z");
+      expect(res.body.until).toBe("2026-04-01T00:00:00.000Z");
+    });
+
+    it("returns empty names list when the window excludes every record", async () => {
+      seed("cpu", 1, "2026-01-01T00:00:00.000Z");
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/names?since=2027-01-01T00:00:00.000Z",
+      );
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        names: [],
+        count: 0,
+        since: "2027-01-01T00:00:00.000Z",
+        until: null,
+      });
+    });
+
+    it("returns 400 when since is not a valid ISO8601 string", async () => {
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/names?since=not-a-date",
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("since");
+    });
+
+    it("returns 400 when until is not a valid ISO8601 string", async () => {
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/names?until=invalid",
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("until");
+    });
+
+    it("returns 400 when since > until", async () => {
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/names" +
+          "?since=2026-06-01T00:00:00.000Z&until=2026-01-01T00:00:00.000Z",
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("since must be less than or equal to until");
+    });
+
+    it("returns 400 when since is an empty string", async () => {
+      const res = await request(app).get(
+        "/api/v1/dashboard/metrics/names?since=",
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("since");
+    });
+
+    it("ignores records whose recorded_at fails Date.parse under a time filter", async () => {
+      // パース不能な recorded_at は時間フィルタ下では集計から除外される
+      // （窓内/窓外を判定できないため）。ただしフィルタ無しでは従来通り含まれる。
+      seed("good", 1, "2026-03-01T00:00:00.000Z");
+      dashboardStore.push({
+        name: "bad",
+        value: 99,
+        recorded_at: "not-an-iso-date",
+      });
+
+      // フィルタ無し → bad も含まれる（既存挙動の回帰）
+      const all = await request(app).get("/api/v1/dashboard/metrics/names");
+      expect(all.status).toBe(200);
+      expect(all.body.names.map((n: { name: string }) => n.name).sort()).toEqual([
+        "bad",
+        "good",
+      ]);
+
+      // 時間フィルタ → bad は除外される
+      const filtered = await request(app).get(
+        "/api/v1/dashboard/metrics/names?since=2026-01-01T00:00:00.000Z",
+      );
+      expect(filtered.status).toBe(200);
+      expect(filtered.body.count).toBe(1);
+      expect(filtered.body.names[0].name).toBe("good");
+    });
   });
 });
 
