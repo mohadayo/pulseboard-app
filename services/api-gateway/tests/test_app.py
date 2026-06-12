@@ -1,4 +1,5 @@
 import importlib
+import math
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -451,6 +452,54 @@ def test_get_metric_stats_percentiles_monotonic():
     data = client.get("/api/v1/metrics/flat/stats").json()
     assert data["p50"] == data["p95"] == data["p99"] == 42.0
     assert data["min"] == data["max"] == 42.0
+
+
+def test_get_metric_stats_std_dev_single_value_is_zero():
+    # 観測 1 件は平均と等しいため、母標準偏差は 0 になる（ゼロ除算ではない）。
+    client.post("/api/v1/metrics", json={"name": "mem", "value": 512.0})
+    data = client.get("/api/v1/metrics/mem/stats").json()
+    assert data["std_dev"] == 0.0
+
+
+def test_get_metric_stats_std_dev_identical_values_is_zero():
+    # 全て同じ値だけが入っている場合、ばらつきはなく std_dev は 0。
+    for _ in range(5):
+        client.post("/api/v1/metrics", json={"name": "flat", "value": 7.5})
+    data = client.get("/api/v1/metrics/flat/stats").json()
+    assert data["std_dev"] == 0.0
+
+
+def test_get_metric_stats_std_dev_population_definition():
+    # 母標準偏差の既知値で確認する。values=[10,20,30,40] のとき
+    #   avg = 25
+    #   variance = ((10-25)^2 + (20-25)^2 + (30-25)^2 + (40-25)^2) / 4
+    #            = (225 + 25 + 25 + 225) / 4 = 125
+    #   std_dev = sqrt(125) ≈ 11.18033989
+    for v in [10.0, 20.0, 30.0, 40.0]:
+        client.post("/api/v1/metrics", json={"name": "cpu", "value": v})
+    data = client.get("/api/v1/metrics/cpu/stats").json()
+    assert data["std_dev"] == pytest.approx(math.sqrt(125.0))
+
+
+def test_get_metric_stats_std_dev_respects_time_filter():
+    # since/until でフィルタした後の値だけで std_dev を再計算する。
+    # b の recorded_at を `until` に渡すと a/b の 2 件が対象になり、
+    # それらの母標準偏差で再計算されることを確認する。
+    from urllib.parse import quote
+    a = client.post("/api/v1/metrics", json={"name": "lat", "value": 10.0}).json()
+    b = client.post("/api/v1/metrics", json={"name": "lat", "value": 20.0}).json()
+    client.post("/api/v1/metrics", json={"name": "lat", "value": 30.0})
+    b_ts = quote(b["recorded_at"], safe="")
+    data = client.get(f"/api/v1/metrics/lat/stats?until={b_ts}").json()
+    assert data["count"] == 2
+    # values=[10,20], avg=15, variance=((10-15)^2 + (20-15)^2)/2 = 25, std_dev=5
+    assert data["std_dev"] == pytest.approx(5.0)
+    # a 単独でフィルタすると std_dev=0
+    from urllib.parse import quote as q
+    a_ts = q(a["recorded_at"], safe="")
+    data_a = client.get(f"/api/v1/metrics/lat/stats?until={a_ts}").json()
+    assert data_a["count"] == 1
+    assert data_a["std_dev"] == 0.0
 
 
 def test_get_metrics_by_name_pagination():

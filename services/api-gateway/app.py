@@ -319,13 +319,21 @@ def get_metric_stats(
     total = sum(values)
     count = len(values)
     sorted_values = sorted(values)
+    avg = total / count
+    # 母標準偏差 (population std dev) を求める。`metrics-worker` の
+    # `/api/v1/aggregate` と定義を揃え、ダッシュボードでどちらのサービス由来でも
+    # 同じ「ばらつき指標」として扱えるようにする。count=1 のときは差分が 0 で
+    # 分散 0、std_dev 0 になる（ゼロ除算ではない）。
+    variance = sum((v - avg) ** 2 for v in values) / count
+    std_dev = math.sqrt(variance)
     stats = {
         "name": metric_name,
         "count": count,
         "min": sorted_values[0],
         "max": sorted_values[-1],
         "sum": total,
-        "avg": total / count,
+        "avg": avg,
+        "std_dev": std_dev,
         "p50": _percentile(sorted_values, 50),
         "p95": _percentile(sorted_values, 95),
         "p99": _percentile(sorted_values, 99),
