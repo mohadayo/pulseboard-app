@@ -1720,3 +1720,133 @@ describe("GET /api/v1/dashboard/metrics/count", () => {
     expect(unfiltered.body.total).toBe(2);
   });
 });
+
+describe("GET /api/v1/dashboard/metrics/:name/tags", () => {
+  it("returns 404 when the metric name has no records", async () => {
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/missing/tags",
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("returns empty tags object when records exist but no tags are attached", async () => {
+    dashboardStore.push({
+      name: "cpu",
+      value: 1,
+      recorded_at: "2026-06-01T00:00:00.000Z",
+    });
+    const res = await request(app).get("/api/v1/dashboard/metrics/cpu/tags");
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe("cpu");
+    expect(res.body.key_count).toBe(0);
+    expect(res.body.total_value_count).toBe(0);
+    expect(res.body.tags).toEqual({});
+  });
+
+  it("aggregates distinct tag keys and values, sorted ascending", async () => {
+    dashboardStore.push(
+      {
+        name: "cpu",
+        value: 1,
+        recorded_at: "2026-06-01T00:00:00.000Z",
+        tags: { region: "us-east-1", env: "prod" },
+      },
+      {
+        name: "cpu",
+        value: 2,
+        recorded_at: "2026-06-01T00:01:00.000Z",
+        tags: { region: "us-west-2", env: "staging" },
+      },
+      {
+        name: "cpu",
+        value: 3,
+        recorded_at: "2026-06-01T00:02:00.000Z",
+        tags: { region: "us-east-1" },
+      },
+      {
+        name: "other",
+        value: 9,
+        recorded_at: "2026-06-01T00:03:00.000Z",
+        tags: { region: "ignored" },
+      },
+    );
+    const res = await request(app).get("/api/v1/dashboard/metrics/cpu/tags");
+    expect(res.status).toBe(200);
+    expect(res.body.key_count).toBe(2);
+    expect(res.body.total_value_count).toBe(4);
+    // キーはアルファベット昇順
+    expect(Object.keys(res.body.tags)).toEqual(["env", "region"]);
+    expect(res.body.tags.env).toEqual(["prod", "staging"]);
+    expect(res.body.tags.region).toEqual(["us-east-1", "us-west-2"]);
+  });
+
+  it("filters by since/until window", async () => {
+    dashboardStore.push(
+      {
+        name: "cpu",
+        value: 1,
+        recorded_at: "2026-06-01T00:00:00.000Z",
+        tags: { env: "prod" },
+      },
+      {
+        name: "cpu",
+        value: 2,
+        recorded_at: "2026-06-02T00:00:00.000Z",
+        tags: { env: "staging" },
+      },
+      {
+        name: "cpu",
+        value: 3,
+        recorded_at: "2026-06-03T00:00:00.000Z",
+        tags: { env: "dev" },
+      },
+    );
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/tags?since=2026-06-01T12:00:00.000Z&until=2026-06-02T12:00:00.000Z",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.tags.env).toEqual(["staging"]);
+    expect(res.body.key_count).toBe(1);
+  });
+
+  it("returns 404 when records exist but window excludes all", async () => {
+    dashboardStore.push({
+      name: "cpu",
+      value: 1,
+      recorded_at: "2025-01-01T00:00:00.000Z",
+      tags: { env: "prod" },
+    });
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/tags?since=2026-01-01T00:00:00.000Z",
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects since greater than until with 400", async () => {
+    dashboardStore.push({
+      name: "cpu",
+      value: 1,
+      recorded_at: "2026-06-01T00:00:00.000Z",
+      tags: { env: "prod" },
+    });
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/tags?since=2026-06-02T00:00:00.000Z&until=2026-06-01T00:00:00.000Z",
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("does not collide with the /:name list route", async () => {
+    dashboardStore.push({
+      name: "tags",
+      value: 1,
+      recorded_at: "2026-06-01T00:00:00.000Z",
+      tags: { kind: "literal" },
+    });
+    // /:name に "tags" 文字列が入っても /:name/tags ルートが先に評価される。
+    // 一覧ルートを使うときは末尾セグメントが無い形でアクセスする。
+    const list = await request(app).get("/api/v1/dashboard/metrics/tags");
+    expect(list.status).toBe(200);
+    expect(list.body.name).toBe("tags");
+    expect(list.body.metrics).toHaveLength(1);
+  });
+});
