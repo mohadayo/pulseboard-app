@@ -914,6 +914,105 @@ app.get(
   }
 );
 
+// 指定メトリクス名で観測された distinct な tag キーと、各キーごとの distinct 値リストを返す。
+// フィルタドロップダウンの populate / faceted search 用途を想定し、
+// `/:name` 全件取得 → クライアント側で抽出 のロジックをサーバに寄せる。
+// `?since=` / `?until=` (ISO8601) で集計対象期間を絞り込める。
+// `/:name` より前に登録して経路の衝突を避ける。
+app.get(
+  "/api/v1/dashboard/metrics/:name/tags",
+  (req: Request, res: Response) => {
+    const name = String(req.params.name);
+
+    const sinceParsed = parseIsoDateTime(req.query.since, "since");
+    if (sinceParsed.error !== null) {
+      log("WARN", `Invalid since param: ${JSON.stringify(req.query.since)}`);
+      res.status(400).json({ error: sinceParsed.error });
+      return;
+    }
+    const untilParsed = parseIsoDateTime(req.query.until, "until");
+    if (untilParsed.error !== null) {
+      log("WARN", `Invalid until param: ${JSON.stringify(req.query.until)}`);
+      res.status(400).json({ error: untilParsed.error });
+      return;
+    }
+    if (
+      sinceParsed.value !== null &&
+      untilParsed.value !== null &&
+      sinceParsed.value.getTime() > untilParsed.value.getTime()
+    ) {
+      log(
+        "WARN",
+        `Invalid range: since=${req.query.since} > until=${req.query.until}`,
+      );
+      res
+        .status(400)
+        .json({ error: "since must be less than or equal to until" });
+      return;
+    }
+
+    const filteredByName = dashboardStore.filter((m) => m.name === name);
+    if (filteredByName.length === 0) {
+      log("WARN", `Metric not found: ${name}`);
+      res.status(404).json({ error: `No metrics found for '${name}'` });
+      return;
+    }
+    const filtered = filterByRecordedAt(
+      filteredByName,
+      sinceParsed.value,
+      untilParsed.value,
+    );
+    if (filtered.length === 0) {
+      log(
+        "INFO",
+        `No metrics in window for '${name}' (since=${req.query.since} until=${req.query.until})`,
+      );
+      res.status(404).json({
+        error: `No metrics found for '${name}' in the given window`,
+      });
+      return;
+    }
+
+    // tag キー -> distinct 値の Set。POST 時に validateTags で各キー/値が
+    // string であることが保証されているため、ここでは存在判定だけで足りる。
+    const tagMap = new Map<string, Set<string>>();
+    for (const m of filtered) {
+      const tags = m.tags;
+      if (tags === undefined) {
+        continue;
+      }
+      for (const [k, v] of Object.entries(tags)) {
+        let set = tagMap.get(k);
+        if (set === undefined) {
+          set = new Set<string>();
+          tagMap.set(k, set);
+        }
+        set.add(v);
+      }
+    }
+
+    // キーは昇順、各キーの値も昇順で返す（クライアント側のソート負担を減らす）。
+    const sortedKeys = Array.from(tagMap.keys()).sort();
+    const tags: Record<string, string[]> = {};
+    let totalValueCount = 0;
+    for (const k of sortedKeys) {
+      const values = Array.from(tagMap.get(k)!).sort();
+      tags[k] = values;
+      totalValueCount += values.length;
+    }
+    log(
+      "INFO",
+      `Listed tags for '${name}': ${sortedKeys.length} key(s) / ${totalValueCount} value(s)`,
+    );
+    res.json({
+      name,
+      key_count: sortedKeys.length,
+      total_value_count: totalValueCount,
+      tags,
+    });
+  }
+);
+
 app.get(
   "/api/v1/dashboard/metrics/:name",
   (req: Request, res: Response) => {
