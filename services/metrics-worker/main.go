@@ -1,15 +1,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
 	"math"
 	"net/http"
 	"os"
+	"os/signal"
 	"sort"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -163,7 +166,7 @@ func aggregateHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // percentile は昇順ソート済みの values から、線形補間による pct パーセンタイル値を返す。
-// pct は 0〜100 の範囲。空スライスの場合は 0 を返す。
+// pct は 0～100 の範囲。空スライスの場合は 0 を返す。
 func percentile(sorted []float64, pct float64) float64 {
 	n := len(sorted)
 	if n == 0 {
@@ -256,8 +259,25 @@ func main() {
 		IdleTimeout:       envSeconds("WORKER_IDLE_TIMEOUT", 60*time.Second),
 	}
 
-	logger.Printf("Starting metrics-worker on port %s", port)
-	if err := srv.ListenAndServe(); err != nil {
-		logger.Fatalf("Server failed: %v", err)
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		logger.Printf("Starting metrics-worker on port %s", port)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Fatalf("Server failed: %v", err)
+		}
+	}()
+
+	<-quit
+	logger.Println("Shutting down metrics-worker gracefully...")
+
+	shutdownTimeout := envSeconds("WORKER_SHUTDOWN_TIMEOUT", 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Fatalf("Graceful shutdown failed: %v", err)
 	}
+	logger.Println("metrics-worker stopped")
 }
