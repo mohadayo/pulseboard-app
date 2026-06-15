@@ -378,6 +378,59 @@ def list_metric_names():
     return {"names": names, "count": len(names)}
 
 
+@app.get("/api/v1/metrics/count")
+def count_metrics(
+    since: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at >= since のレコードのみ集計",
+    ),
+    until: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at <= until のレコードのみ集計",
+    ),
+):
+    """保持中メトリクスの件数のみを返す軽量エンドポイント。
+
+    `GET /api/v1/metrics` はレコード本体を含むページング応答を返すため、UI で
+    「総数バッジ」「メトリクス名ごとの件数」だけ知りたいケースには過剰。本エンドポイントは
+    `total_metrics` / `distinct_names` / `by_name` の 3 つだけを返す。`by_name` は
+    フィルタ後に観測されたメトリクス名のみで、観測 0 件の名前はキーに含めない（軽量化）。
+
+    `since` / `until` で `recorded_at` 範囲を絞り込める（既存 `/api/v1/metrics` と同じ規約）。
+    `/api/v1/metrics/names` の `latest_recorded_at` と違い、こちらは時間フィルタ後の
+    件数集計まで踏み込むため UI の「期間内バッジ」に直接使える。
+
+    レジストレーション位置: `/{metric_name}` ルートより前に置く必要がある
+    （FastAPI は登録順マッチで、後置だと `metric_name=\"count\"` として捕捉される）。
+    """
+    since_dt, until_dt = _parse_since_until(since, until)
+
+    with _store_lock:
+        snapshot: list[tuple[str, list[dict]]] = [
+            (name, list(entries)) for name, entries in metrics_store.items()
+        ]
+
+    by_name: dict[str, int] = {}
+    total = 0
+    for name, entries in snapshot:
+        filtered = _apply_time_filter(entries, since_dt, until_dt)
+        if not filtered:
+            # 時間フィルタ後に 0 件のメトリクス名は by_name に含めない（軽量化）。
+            continue
+        by_name[name] = len(filtered)
+        total += len(filtered)
+
+    logger.info(
+        "Count requested: total=%d distinct_names=%d (since=%s until=%s)",
+        total, len(by_name), since, until,
+    )
+    return {
+        "total_metrics": total,
+        "distinct_names": len(by_name),
+        "by_name": by_name,
+    }
+
+
 @app.get("/api/v1/metrics/{metric_name}")
 def get_metrics_by_name(
     metric_name: str,
