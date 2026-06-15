@@ -681,3 +681,95 @@ def test_list_metric_names_excludes_deleted_metrics():
     resp = client.get("/api/v1/metrics/names")
     assert resp.status_code == 200
     assert [n["name"] for n in resp.json()["names"]] == ["keep"]
+
+
+# ---- /api/v1/metrics/count ----
+
+def test_count_metrics_empty_store():
+    resp = client.get("/api/v1/metrics/count")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"total_metrics": 0, "distinct_names": 0, "by_name": {}}
+
+
+def test_count_metrics_basic():
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 1.0})
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 2.0})
+    client.post("/api/v1/metrics", json={"name": "mem", "value": 100.0})
+    resp = client.get("/api/v1/metrics/count")
+    body = resp.json()
+    assert body["total_metrics"] == 3
+    assert body["distinct_names"] == 2
+    assert body["by_name"] == {"cpu": 2, "mem": 1}
+
+
+def test_count_metrics_omits_empty_after_delete():
+    # /count は時間フィルタ後 0 件の name を by_name に含めない設計。
+    # delete で全削除した name は store からも消えるが、念のため一致する挙動か確認。
+    client.post("/api/v1/metrics", json={"name": "doomed", "value": 1.0})
+    client.delete("/api/v1/metrics/doomed")
+    client.post("/api/v1/metrics", json={"name": "kept", "value": 2.0})
+    resp = client.get("/api/v1/metrics/count")
+    body = resp.json()
+    assert body == {"total_metrics": 1, "distinct_names": 1, "by_name": {"kept": 1}}
+
+
+def test_count_metrics_since_filter():
+    # 過去・未来の境界が動かないよう、固定の ISO 文字列を使った時間境界をテスト
+    client.post("/api/v1/metrics", json={"name": "a", "value": 1.0})
+    client.post("/api/v1/metrics", json={"name": "b", "value": 2.0})
+    # since が現在より十分未来なら 0 件
+    resp = client.get("/api/v1/metrics/count?since=2999-01-01T00:00:00Z")
+    body = resp.json()
+    assert body == {"total_metrics": 0, "distinct_names": 0, "by_name": {}}
+
+
+def test_count_metrics_until_filter():
+    client.post("/api/v1/metrics", json={"name": "a", "value": 1.0})
+    # until が十分過去なら 0 件
+    resp = client.get("/api/v1/metrics/count?until=2000-01-01T00:00:00Z")
+    body = resp.json()
+    assert body["total_metrics"] == 0
+    assert body["by_name"] == {}
+
+
+def test_count_metrics_since_includes_recent():
+    # since=過去 なら全件含まれる
+    client.post("/api/v1/metrics", json={"name": "a", "value": 1.0})
+    client.post("/api/v1/metrics", json={"name": "a", "value": 2.0})
+    resp = client.get("/api/v1/metrics/count?since=2000-01-01T00:00:00Z")
+    body = resp.json()
+    assert body["total_metrics"] == 2
+    assert body["by_name"] == {"a": 2}
+
+
+def test_count_metrics_rejects_invalid_since():
+    resp = client.get("/api/v1/metrics/count?since=not-a-date")
+    assert resp.status_code == 400
+
+
+def test_count_metrics_rejects_blank_since():
+    resp = client.get("/api/v1/metrics/count?since=%20")
+    assert resp.status_code == 400
+
+
+def test_count_metrics_rejects_since_after_until():
+    resp = client.get(
+        "/api/v1/metrics/count?since=2026-12-01T00:00:00Z&until=2026-01-01T00:00:00Z"
+    )
+    assert resp.status_code == 400
+
+
+def test_count_metrics_does_not_collide_with_path_param():
+    # /api/v1/metrics/count は /api/v1/metrics/{metric_name} と URL 形が似ているが、
+    # FastAPI は登録順で /count を先に評価するため、metric_name="count" として
+    # 解釈されないことを保証する。
+    client.post("/api/v1/metrics", json={"name": "x", "value": 1.0})
+    resp = client.get("/api/v1/metrics/count")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "total_metrics" in body
+    # かつ /{metric_name} 経由で count という名前のメトリクスが定義されていれば
+    # 当然 404 になる（事故防止のための明示テスト）。
+    resp_path = client.get("/api/v1/metrics/count_no_such_metric")
+    assert resp_path.status_code == 404
