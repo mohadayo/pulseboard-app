@@ -21,19 +21,23 @@ type AggregateRequest struct {
 }
 
 type AggregateResponse struct {
-	Count  int     `json:"count"`
-	Sum    float64 `json:"sum"`
-	Avg    float64 `json:"avg"`
-	Min    float64 `json:"min"`
-	Max    float64 `json:"max"`
-	Range  float64 `json:"range"`
-	StdDev float64 `json:"std_dev"`
-	Median float64 `json:"median"`
-	P25    float64 `json:"p25"`
-	P75    float64 `json:"p75"`
-	IQR    float64 `json:"iqr"`
-	P95    float64 `json:"p95"`
-	P99    float64 `json:"p99"`
+	Count int     `json:"count"`
+	Sum   float64 `json:"sum"`
+	Avg   float64 `json:"avg"`
+	Min   float64 `json:"min"`
+	Max   float64 `json:"max"`
+	Range float64 `json:"range"`
+	// 母集団分散（除数 n、Bessel 補正なし）。StdDev = sqrt(Variance) の関係を保つ。
+	// 後段の集計サーバが複数 worker の結果をマージする際、平方和を再計算せずに
+	// 合成分散の閉形式を組み立てられるようにするため、std_dev とは別に露出する。
+	Variance float64 `json:"variance"`
+	StdDev   float64 `json:"std_dev"`
+	Median   float64 `json:"median"`
+	P25      float64 `json:"p25"`
+	P75      float64 `json:"p75"`
+	IQR      float64 `json:"iqr"`
+	P95      float64 `json:"p95"`
+	P99      float64 `json:"p99"`
 }
 
 type HealthResponse struct {
@@ -195,7 +199,7 @@ func percentile(sorted []float64, pct float64) float64 {
 func (a AggregateResponse) hasNonFinite() bool {
 	for _, v := range []float64{
 		a.Sum, a.Avg, a.Min, a.Max, a.Range,
-		a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P95, a.P99,
+		a.Variance, a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P95, a.P99,
 	} {
 		if math.IsInf(v, 0) || math.IsNaN(v) {
 			return true
@@ -237,19 +241,20 @@ func computeAggregate(values []float64) AggregateResponse {
 	p25 := percentile(sorted, 25)
 	p75 := percentile(sorted, 75)
 	return AggregateResponse{
-		Count:  n,
-		Sum:    sum,
-		Avg:    avg,
-		Min:    minVal,
-		Max:    maxVal,
-		Range:  maxVal - minVal,
-		StdDev: stdDev,
-		Median: percentile(sorted, 50),
-		P25:    p25,
-		P75:    p75,
-		IQR:    p75 - p25,
-		P95:    percentile(sorted, 95),
-		P99:    percentile(sorted, 99),
+		Count:    n,
+		Sum:      sum,
+		Avg:      avg,
+		Min:      minVal,
+		Max:      maxVal,
+		Range:    maxVal - minVal,
+		Variance: variance,
+		StdDev:   stdDev,
+		Median:   percentile(sorted, 50),
+		P25:      p25,
+		P75:      p75,
+		IQR:      p75 - p25,
+		P95:      percentile(sorted, 95),
+		P99:      percentile(sorted, 99),
 	}
 }
 
