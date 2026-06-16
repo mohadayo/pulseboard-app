@@ -26,8 +26,12 @@ type AggregateResponse struct {
 	Avg    float64 `json:"avg"`
 	Min    float64 `json:"min"`
 	Max    float64 `json:"max"`
+	Range  float64 `json:"range"`
 	StdDev float64 `json:"std_dev"`
 	Median float64 `json:"median"`
+	P25    float64 `json:"p25"`
+	P75    float64 `json:"p75"`
+	IQR    float64 `json:"iqr"`
 	P95    float64 `json:"p95"`
 	P99    float64 `json:"p99"`
 }
@@ -189,7 +193,10 @@ func percentile(sorted []float64, pct float64) float64 {
 // なっていないかを判定する。有限入力でもオーバーフローで非有限になりうるため、
 // 壊れた 200 応答を返す前にこの判定を用いる。
 func (a AggregateResponse) hasNonFinite() bool {
-	for _, v := range []float64{a.Sum, a.Avg, a.Min, a.Max, a.StdDev, a.Median, a.P95, a.P99} {
+	for _, v := range []float64{
+		a.Sum, a.Avg, a.Min, a.Max, a.Range,
+		a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P95, a.P99,
+	} {
 		if math.IsInf(v, 0) || math.IsNaN(v) {
 			return true
 		}
@@ -227,14 +234,20 @@ func computeAggregate(values []float64) AggregateResponse {
 	copy(sorted, values)
 	sort.Float64s(sorted)
 
+	p25 := percentile(sorted, 25)
+	p75 := percentile(sorted, 75)
 	return AggregateResponse{
 		Count:  n,
 		Sum:    sum,
 		Avg:    avg,
 		Min:    minVal,
 		Max:    maxVal,
+		Range:  maxVal - minVal,
 		StdDev: stdDev,
 		Median: percentile(sorted, 50),
+		P25:    p25,
+		P75:    p75,
+		IQR:    p75 - p25,
 		P95:    percentile(sorted, 95),
 		P99:    percentile(sorted, 99),
 	}
