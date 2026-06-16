@@ -505,4 +505,78 @@ func TestAggregateResponseHasNonFiniteDetectsNewFields(t *testing.T) {
 	if !resp.hasNonFinite() {
 		t.Error("expected hasNonFinite to detect NaN p75")
 	}
+	resp = AggregateResponse{Variance: math.NaN()}
+	if !resp.hasNonFinite() {
+		t.Error("expected hasNonFinite to detect NaN variance")
+	}
+	resp = AggregateResponse{Variance: math.Inf(1)}
+	if !resp.hasNonFinite() {
+		t.Error("expected hasNonFinite to detect Inf variance")
+	}
+}
+
+// 母集団分散（除数 n）の代表値を回帰する。
+// values=[2,4,4,4,5,5,7,9] の母集団分散は 4.0、std_dev は 2.0。
+func TestComputeAggregateVariance(t *testing.T) {
+	result := computeAggregate([]float64{2, 4, 4, 4, 5, 5, 7, 9})
+	if !approxEqual(result.Variance, 4.0, 1e-9) {
+		t.Errorf("expected variance 4.0, got %f", result.Variance)
+	}
+	// std_dev = sqrt(variance) を保つこと。丸め誤差で 0 にならない範囲で確認。
+	if !approxEqual(result.StdDev*result.StdDev, result.Variance, 1e-9) {
+		t.Errorf(
+			"expected std_dev^2 == variance, std_dev=%f variance=%f",
+			result.StdDev, result.Variance,
+		)
+	}
+}
+
+// 単一要素入力では分散・標準偏差ともに 0 になること。
+func TestComputeAggregateVarianceSingleValue(t *testing.T) {
+	result := computeAggregate([]float64{42})
+	if result.Variance != 0 {
+		t.Errorf("expected variance 0 for single value, got %f", result.Variance)
+	}
+	if result.StdDev != 0 {
+		t.Errorf("expected std_dev 0 for single value, got %f", result.StdDev)
+	}
+}
+
+// すべて同値の入力では分散 = 0（StdDev と整合）。
+func TestComputeAggregateVarianceConstantInput(t *testing.T) {
+	result := computeAggregate([]float64{7, 7, 7, 7, 7})
+	if result.Variance != 0 {
+		t.Errorf("expected variance 0 for constant input, got %f", result.Variance)
+	}
+}
+
+// JSON レスポンスに variance キーが含まれることを確認する（消費側 API の保証）。
+func TestAggregateHandlerIncludesVarianceField(t *testing.T) {
+	body, _ := json.Marshal(AggregateRequest{Values: []float64{1, 2, 3, 4, 5}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/aggregate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	aggregateHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("failed to decode raw: %v", err)
+	}
+	if _, ok := raw["variance"]; !ok {
+		t.Errorf("response JSON missing key \"variance\"")
+	}
+
+	var resp AggregateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+	// 1..5 の母集団分散 = 2.0
+	if !approxEqual(resp.Variance, 2.0, 1e-9) {
+		t.Errorf("expected variance 2.0, got %f", resp.Variance)
+	}
 }
