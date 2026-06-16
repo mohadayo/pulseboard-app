@@ -402,3 +402,107 @@ func TestEnvIntOverride(t *testing.T) {
 		t.Errorf("expected 1234, got %d", got)
 	}
 }
+
+// Range = max - min を返すこと。AggregateResponse の `range` JSON フィールド経由で
+// 後方互換に新規追加されたことを保証する。
+func TestComputeAggregateRange(t *testing.T) {
+	resp := computeAggregate([]float64{1, 4, 9, 16, 25})
+	if resp.Range != 24 {
+		t.Errorf("expected range 24, got %f", resp.Range)
+	}
+}
+
+// 単一要素の入力では range / iqr は 0 になる（p25 == p75 == 唯一の値）。
+func TestComputeAggregateRangeAndIQRSingleElement(t *testing.T) {
+	resp := computeAggregate([]float64{42})
+	if resp.Range != 0 {
+		t.Errorf("expected range 0 for single value, got %f", resp.Range)
+	}
+	if resp.IQR != 0 {
+		t.Errorf("expected iqr 0 for single value, got %f", resp.IQR)
+	}
+	if resp.P25 != 42 || resp.P75 != 42 {
+		t.Errorf("expected p25=p75=42, got p25=%f p75=%f", resp.P25, resp.P75)
+	}
+}
+
+// 1..9 の整数列における四分位の標準的な計算値を検証する。
+// 線形補間 percentile では p25=3, p50=5, p75=7, IQR=4 になる。
+func TestComputeAggregateQuartilesOfSimpleSeries(t *testing.T) {
+	resp := computeAggregate([]float64{1, 2, 3, 4, 5, 6, 7, 8, 9})
+	if resp.P25 != 3 {
+		t.Errorf("expected p25=3, got %f", resp.P25)
+	}
+	if resp.Median != 5 {
+		t.Errorf("expected median=5, got %f", resp.Median)
+	}
+	if resp.P75 != 7 {
+		t.Errorf("expected p75=7, got %f", resp.P75)
+	}
+	if resp.IQR != 4 {
+		t.Errorf("expected iqr=4, got %f", resp.IQR)
+	}
+	if resp.Range != 8 {
+		t.Errorf("expected range=8, got %f", resp.Range)
+	}
+}
+
+// IQR は常に p75 - p25 と整合する（任意の入力で成立する不変条件）。
+func TestComputeAggregateIQRConsistencyWithP25P75(t *testing.T) {
+	resp := computeAggregate([]float64{10.5, 11.0, 12.5, 13.0, 14.0, 15.5, 17.0, 22.0, 100.0})
+	diff := resp.P75 - resp.P25
+	if math.Abs(resp.IQR-diff) > 1e-9 {
+		t.Errorf("expected iqr=%f to equal p75-p25=%f", resp.IQR, diff)
+	}
+}
+
+// JSON レスポンスに新フィールドが含まれて返ること。
+// （後方互換: 既存フィールドも引き続き含む）
+func TestAggregateHandlerReturnsNewPercentileFields(t *testing.T) {
+	body, _ := json.Marshal(AggregateRequest{Values: []float64{1, 2, 3, 4, 5, 6, 7, 8, 9}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/aggregate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	aggregateHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+	for _, key := range []string{"p25", "p75", "iqr", "range"} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("expected response key %q to be present", key)
+		}
+	}
+	// 後方互換: 既存キーも残っていること。
+	for _, key := range []string{"count", "sum", "avg", "min", "max", "std_dev", "median", "p95", "p99"} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("expected legacy response key %q to remain", key)
+		}
+	}
+}
+
+// hasNonFinite() が新フィールドの NaN/Inf も検出することを保証する。
+// （壊れた 200 レスポンスを返さないための保険）
+func TestAggregateResponseHasNonFiniteDetectsNewFields(t *testing.T) {
+	resp := AggregateResponse{Range: math.Inf(1)}
+	if !resp.hasNonFinite() {
+		t.Error("expected hasNonFinite to detect Inf range")
+	}
+	resp = AggregateResponse{P25: math.NaN()}
+	if !resp.hasNonFinite() {
+		t.Error("expected hasNonFinite to detect NaN p25")
+	}
+	resp = AggregateResponse{IQR: math.Inf(-1)}
+	if !resp.hasNonFinite() {
+		t.Error("expected hasNonFinite to detect -Inf iqr")
+	}
+	resp = AggregateResponse{P75: math.NaN()}
+	if !resp.hasNonFinite() {
+		t.Error("expected hasNonFinite to detect NaN p75")
+	}
+}
