@@ -484,6 +484,19 @@ describe("GET /api/v1/dashboard/metrics/:name/stats", () => {
     expect(listRes.body.metrics).toHaveLength(1);
     expect(listRes.body.name).toBe("stats");
   });
+
+  it("exposes variance and std_dev consistent with the population formula", async () => {
+    // values=[10,20,30,40], avg=25, variance=125, std_dev=sqrt(125)
+    for (const v of [10, 20, 30, 40]) {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "cpu", value: v });
+    }
+    const res = await request(app).get("/api/v1/dashboard/metrics/cpu/stats");
+    expect(res.status).toBe(200);
+    expect(res.body.variance).toBeCloseTo(125, 6);
+    expect(res.body.std_dev).toBeCloseTo(Math.sqrt(125), 6);
+  });
 });
 
 describe("GET /api/v1/dashboard/metrics/:name/latest", () => {
@@ -754,6 +767,44 @@ describe("computeStats helper", () => {
     expect(stats.max).toBe(100);
     // sorted=[1,50,100], rank(0.5*2)=1 → p50=50
     expect(stats.p50).toBe(50);
+  });
+
+  it("returns variance=0 and std_dev=0 for a single record", () => {
+    const ts = new Date().toISOString();
+    const stats = computeStats("solo", [
+      { name: "solo", value: 42, recorded_at: ts },
+    ]);
+    expect(stats.variance).toBe(0);
+    expect(stats.std_dev).toBe(0);
+  });
+
+  it("returns variance=0 and std_dev=0 when all values are identical", () => {
+    const ts = new Date().toISOString();
+    const stats = computeStats(
+      "flat",
+      Array.from({ length: 5 }, () => ({
+        name: "flat",
+        value: 7.5,
+        recorded_at: ts,
+      })),
+    );
+    expect(stats.variance).toBe(0);
+    expect(stats.std_dev).toBe(0);
+  });
+
+  it("computes population variance and std_dev (matches metrics-worker formula)", () => {
+    const ts = new Date().toISOString();
+    // values=[10,20,30,40], avg=25
+    //   variance = ((10-25)^2 + (20-25)^2 + (30-25)^2 + (40-25)^2) / 4
+    //            = (225 + 25 + 25 + 225) / 4 = 125
+    //   std_dev  = sqrt(125)
+    const stats = computeStats("cpu", [10, 20, 30, 40].map((v) => ({
+      name: "cpu",
+      value: v,
+      recorded_at: ts,
+    })));
+    expect(stats.variance).toBeCloseTo(125, 6);
+    expect(stats.std_dev).toBeCloseTo(Math.sqrt(125), 6);
   });
 });
 
