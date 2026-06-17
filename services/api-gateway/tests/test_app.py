@@ -461,6 +461,25 @@ def test_get_metric_stats_std_dev_single_value_is_zero():
     assert data["std_dev"] == 0.0
 
 
+def test_get_metric_stats_variance_single_value_is_zero():
+    # 観測 1 件のときの分散も 0。
+    client.post("/api/v1/metrics", json={"name": "mem", "value": 512.0})
+    data = client.get("/api/v1/metrics/mem/stats").json()
+    assert data["variance"] == 0.0
+
+
+def test_get_metric_stats_variance_population_definition():
+    # 母集団分散の既知値で確認する。values=[10,20,30,40] のとき
+    #   variance = ((10-25)^2 + (20-25)^2 + (30-25)^2 + (40-25)^2) / 4
+    #            = (225 + 25 + 25 + 225) / 4 = 125
+    for v in [10.0, 20.0, 30.0, 40.0]:
+        client.post("/api/v1/metrics", json={"name": "cpu", "value": v})
+    data = client.get("/api/v1/metrics/cpu/stats").json()
+    assert data["variance"] == pytest.approx(125.0)
+    # std_dev = sqrt(variance) の関係も保たれる（metrics-worker と同じ式）。
+    assert data["std_dev"] == pytest.approx(math.sqrt(data["variance"]))
+
+
 def test_get_metric_stats_std_dev_identical_values_is_zero():
     # 全て同じ値だけが入っている場合、ばらつきはなく std_dev は 0。
     for _ in range(5):
