@@ -333,6 +333,12 @@ def get_metric_stats(
         "max": sorted_values[-1],
         "sum": total,
         "avg": avg,
+        # 母集団分散（除数 N、Bessel 補正なし）と母標準偏差をペアで露出する。
+        # `metrics-worker` の `/api/v1/aggregate` と式を統一しており、下流の
+        # `dashboard-bff` で「複数 worker の集計結果を合成分散の閉形式で
+        # 集約する」ためのフィールドを欠落させない。`std_dev = sqrt(variance)`
+        # の関係を保つ（`count == 1` は両者とも 0.0）。
+        "variance": variance,
         "std_dev": std_dev,
         "p50": _percentile(sorted_values, 50),
         "p95": _percentile(sorted_values, 95),

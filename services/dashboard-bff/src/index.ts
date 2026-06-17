@@ -193,6 +193,12 @@ interface DashboardStats {
   max: number;
   sum: number;
   avg: number;
+  // 母集団分散（除数 N、Bessel 補正なし）と母標準偏差をペアで露出する。
+  // 上流の `api-gateway` (`/api/v1/metrics/{name}/stats`) と `metrics-worker`
+  // (`/api/v1/aggregate`) の式と統一し、BFF 経由でも同じ統計量を欠落させない。
+  // `std_dev = sqrt(variance)` の関係を保つ（`count === 1` の場合は両方 0）。
+  variance: number;
+  std_dev: number;
   p50: number;
   p95: number;
   p99: number;
@@ -355,13 +361,22 @@ function computeStats(name: string, metrics: DashboardMetric[]): DashboardStats 
   // `Math.min(...arr)` / `Math.max(...arr)` は要素数が多いとスタック上限
   // に達する処理系がある（V8 でも引数数に上限）。reduce ベースで安全に評価する。
   const sorted = [...values].sort((a, b) => a - b);
+  const avg = sum / count;
+  // 母集団分散（除数 count、Bessel 補正なし）。上流の `api-gateway` および
+  // `metrics-worker` と式を統一する。`count === 1` のときは差分が 0 で
+  // variance も std_dev も 0（ゼロ除算ではない）。
+  const variance =
+    values.reduce((acc, v) => acc + (v - avg) * (v - avg), 0) / count;
+  const std_dev = Math.sqrt(variance);
   return {
     name,
     count,
     min: sorted[0],
     max: sorted[count - 1],
     sum,
-    avg: sum / count,
+    avg,
+    variance,
+    std_dev,
     p50: percentile(sorted, 50),
     p95: percentile(sorted, 95),
     p99: percentile(sorted, 99),
