@@ -36,8 +36,11 @@ type AggregateResponse struct {
 	P25      float64 `json:"p25"`
 	P75      float64 `json:"p75"`
 	IQR      float64 `json:"iqr"`
-	P95      float64 `json:"p95"`
-	P99      float64 `json:"p99"`
+	// SLO 指標として p95 / p99 と並んで実利用で使われるため、既存パーセンタイル群と
+	// 同じ補間方式 (percentile()) で個別フィールドとして露出する。
+	P90 float64 `json:"p90"`
+	P95 float64 `json:"p95"`
+	P99 float64 `json:"p99"`
 }
 
 type HealthResponse struct {
@@ -199,7 +202,7 @@ func percentile(sorted []float64, pct float64) float64 {
 func (a AggregateResponse) hasNonFinite() bool {
 	for _, v := range []float64{
 		a.Sum, a.Avg, a.Min, a.Max, a.Range,
-		a.Variance, a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P95, a.P99,
+		a.Variance, a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P90, a.P95, a.P99,
 	} {
 		if math.IsInf(v, 0) || math.IsNaN(v) {
 			return true
@@ -253,6 +256,7 @@ func computeAggregate(values []float64) AggregateResponse {
 		P25:      p25,
 		P75:      p75,
 		IQR:      p75 - p25,
+		P90:      percentile(sorted, 90),
 		P95:      percentile(sorted, 95),
 		P99:      percentile(sorted, 99),
 	}
