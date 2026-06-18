@@ -580,3 +580,74 @@ func TestAggregateHandlerIncludesVarianceField(t *testing.T) {
 		t.Errorf("expected variance 2.0, got %f", resp.Variance)
 	}
 }
+
+// 1..100 の数値で p90 ≈ 90.10（線形補間方式）であることを回帰する。
+// rank = 0.90 * 99 = 89.1, sorted[89]=90, sorted[90]=91, p90 = 90 + 0.1 * 1 = 90.1
+func TestComputeAggregateP90(t *testing.T) {
+	values := make([]float64, 100)
+	for i := range values {
+		values[i] = float64(i + 1)
+	}
+	result := computeAggregate(values)
+	if !approxEqual(result.P90, 90.10, 0.01) {
+		t.Errorf("expected p90 ≈ 90.10, got %f", result.P90)
+	}
+	// p25/p50/p75/p90/p95/p99 の単調増加（昇順入力の不変条件）を確認する。
+	if !(result.P25 <= result.Median &&
+		result.Median <= result.P75 &&
+		result.P75 <= result.P90 &&
+		result.P90 <= result.P95 &&
+		result.P95 <= result.P99) {
+		t.Errorf("expected percentiles to be monotonic non-decreasing")
+	}
+}
+
+// 単一要素入力では p90 もその値そのものになる。
+func TestComputeAggregateP90SingleValue(t *testing.T) {
+	result := computeAggregate([]float64{42})
+	if result.P90 != 42 {
+		t.Errorf("expected p90=42 for single value, got %f", result.P90)
+	}
+}
+
+// すべて同値の入力では p90 もその値そのもの（範囲ゼロの自明ケース）。
+func TestComputeAggregateP90ConstantInput(t *testing.T) {
+	result := computeAggregate([]float64{7, 7, 7, 7, 7})
+	if result.P90 != 7 {
+		t.Errorf("expected p90=7 for constant input, got %f", result.P90)
+	}
+}
+
+// JSON レスポンスに p90 キーが含まれることを確認する（消費側 API の保証）。
+func TestAggregateHandlerIncludesP90Field(t *testing.T) {
+	body, _ := json.Marshal(AggregateRequest{Values: []float64{1, 2, 3, 4, 5}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/aggregate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	aggregateHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("failed to decode raw: %v", err)
+	}
+	if _, ok := raw["p90"]; !ok {
+		t.Errorf("response JSON missing key \"p90\"")
+	}
+}
+
+// hasNonFinite() が p90 の NaN/Inf も検出することを保証する。
+func TestAggregateResponseHasNonFiniteDetectsP90(t *testing.T) {
+	resp := AggregateResponse{P90: math.NaN()}
+	if !resp.hasNonFinite() {
+		t.Error("expected hasNonFinite to detect NaN p90")
+	}
+	resp = AggregateResponse{P90: math.Inf(1)}
+	if !resp.hasNonFinite() {
+		t.Error("expected hasNonFinite to detect Inf p90")
+	}
+}
