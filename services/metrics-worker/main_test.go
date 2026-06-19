@@ -651,3 +651,93 @@ func TestAggregateResponseHasNonFiniteDetectsP90(t *testing.T) {
 		t.Error("expected hasNonFinite to detect Inf p90")
 	}
 }
+
+// CV (Coefficient of Variation) = std_dev / |avg|。
+// avg=10, std_dev≈2 のとき CV≈0.2。
+func TestComputeAggregateCV(t *testing.T) {
+	values := []float64{8, 9, 10, 11, 12}
+	result := computeAggregate(values)
+	// avg = 10, variance = ((-2)^2 + (-1)^2 + 0 + 1^2 + 2^2)/5 = 10/5 = 2
+	// std_dev = sqrt(2) ≈ 1.4142, CV = 1.4142 / 10 ≈ 0.14142
+	expected := math.Sqrt(2) / 10
+	if math.Abs(result.CV-expected) > 1e-9 {
+		t.Errorf("expected CV %.6f, got %.6f", expected, result.CV)
+	}
+}
+
+// avg = 0 のときは 0/0 不定なので 0 を返す。
+func TestComputeAggregateCVZeroAverage(t *testing.T) {
+	values := []float64{-5, 0, 5}
+	result := computeAggregate(values)
+	if result.Avg != 0 {
+		t.Fatalf("test precondition failed: expected avg 0, got %f", result.Avg)
+	}
+	if result.CV != 0 {
+		t.Errorf("expected CV 0 when avg=0, got %f", result.CV)
+	}
+}
+
+// 定数入力では分散も 0 になるため CV = 0。
+func TestComputeAggregateCVConstantInput(t *testing.T) {
+	values := []float64{42, 42, 42, 42}
+	result := computeAggregate(values)
+	if result.CV != 0 {
+		t.Errorf("expected CV 0 for constant input, got %f", result.CV)
+	}
+}
+
+// 単一要素では std_dev = 0 なので CV = 0。
+func TestComputeAggregateCVSingleValue(t *testing.T) {
+	result := computeAggregate([]float64{17})
+	if result.CV != 0 {
+		t.Errorf("expected CV 0 for single value, got %f", result.CV)
+	}
+}
+
+// 負の avg でも |avg| を使うので CV は正の値。
+func TestComputeAggregateCVNegativeAverage(t *testing.T) {
+	values := []float64{-12, -10, -8}
+	result := computeAggregate(values)
+	// avg = -10, variance = (4+0+4)/3 = 8/3, std_dev = sqrt(8/3)
+	// CV = sqrt(8/3) / 10
+	expected := math.Sqrt(8.0/3.0) / 10
+	if math.Abs(result.CV-expected) > 1e-9 {
+		t.Errorf("expected CV %.6f, got %.6f", expected, result.CV)
+	}
+	if result.CV < 0 {
+		t.Errorf("CV must be non-negative, got %f", result.CV)
+	}
+}
+
+func TestAggregateHandlerIncludesCVField(t *testing.T) {
+	body, _ := json.Marshal(AggregateRequest{Values: []float64{1, 2, 3, 4, 5}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/aggregate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	aggregateHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("failed to decode raw: %v", err)
+	}
+	if _, ok := raw["cv"]; !ok {
+		t.Errorf("response JSON missing key \"cv\"")
+	}
+}
+
+// hasNonFinite() が CV の NaN/Inf も検出することを保証する。
+func TestAggregateResponseHasNonFiniteDetectsCV(t *testing.T) {
+	resp := AggregateResponse{CV: math.NaN()}
+	if !resp.hasNonFinite() {
+		t.Error("expected hasNonFinite to detect NaN cv")
+	}
+	resp = AggregateResponse{CV: math.Inf(1)}
+	if !resp.hasNonFinite() {
+		t.Error("expected hasNonFinite to detect Inf cv")
+	}
+}
