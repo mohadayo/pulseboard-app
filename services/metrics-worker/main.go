@@ -41,6 +41,11 @@ type AggregateResponse struct {
 	P90 float64 `json:"p90"`
 	P95 float64 `json:"p95"`
 	P99 float64 `json:"p99"`
+	// 変動係数 (Coefficient of Variation): std_dev / |avg|。
+	// 「ばらつきの相対量」を示し、応答時間ベースラインが異なるサービス同士の
+	// 安定性比較に用いられる。`avg == 0` の場合は定義不能 (0/0) なので 0 を返す
+	// （定数 0 入力など、変動が全くない退化ケースをエンコード可能な値に寄せる）。
+	CV float64 `json:"cv"`
 }
 
 type HealthResponse struct {
@@ -202,7 +207,7 @@ func percentile(sorted []float64, pct float64) float64 {
 func (a AggregateResponse) hasNonFinite() bool {
 	for _, v := range []float64{
 		a.Sum, a.Avg, a.Min, a.Max, a.Range,
-		a.Variance, a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P90, a.P95, a.P99,
+		a.Variance, a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P90, a.P95, a.P99, a.CV,
 	} {
 		if math.IsInf(v, 0) || math.IsNaN(v) {
 			return true
@@ -243,6 +248,12 @@ func computeAggregate(values []float64) AggregateResponse {
 
 	p25 := percentile(sorted, 25)
 	p75 := percentile(sorted, 75)
+	// 変動係数: std_dev / |avg|。avg = 0 は定義不能なので 0 を返す
+	// （定数 0 入力では variance も 0 となり「ばらつき無し」相当として整合）。
+	cv := 0.0
+	if avg != 0 {
+		cv = stdDev / math.Abs(avg)
+	}
 	return AggregateResponse{
 		Count:    n,
 		Sum:      sum,
@@ -259,6 +270,7 @@ func computeAggregate(values []float64) AggregateResponse {
 		P90:      percentile(sorted, 90),
 		P95:      percentile(sorted, 95),
 		P99:      percentile(sorted, 99),
+		CV:       cv,
 	}
 }
 
