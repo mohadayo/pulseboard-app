@@ -199,6 +199,10 @@ interface DashboardStats {
   // `std_dev = sqrt(variance)` の関係を保つ（`count === 1` の場合は両方 0）。
   variance: number;
   std_dev: number;
+  // 変動係数 (Coefficient of Variation): std_dev / |avg|。
+  // `api-gateway` および `metrics-worker` と定義を統一する。
+  // avg === 0 の場合は定義不能 (0/0) なので 0 を返す。
+  cv: number;
   p50: number;
   p95: number;
   p99: number;
@@ -368,6 +372,9 @@ function computeStats(name: string, metrics: DashboardMetric[]): DashboardStats 
   const variance =
     values.reduce((acc, v) => acc + (v - avg) * (v - avg), 0) / count;
   const std_dev = Math.sqrt(variance);
+  // 変動係数: std_dev / |avg|。avg === 0 は定義不能なので 0 を返す
+  // （`api-gateway` および `metrics-worker` と定義を統一）。
+  const cv = avg !== 0 ? std_dev / Math.abs(avg) : 0;
   return {
     name,
     count,
@@ -377,6 +384,7 @@ function computeStats(name: string, metrics: DashboardMetric[]): DashboardStats 
     avg,
     variance,
     std_dev,
+    cv,
     p50: percentile(sorted, 50),
     p95: percentile(sorted, 95),
     p99: percentile(sorted, 99),
