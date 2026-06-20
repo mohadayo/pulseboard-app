@@ -497,6 +497,30 @@ describe("GET /api/v1/dashboard/metrics/:name/stats", () => {
     expect(res.body.variance).toBeCloseTo(125, 6);
     expect(res.body.std_dev).toBeCloseTo(Math.sqrt(125), 6);
   });
+
+  it("exposes cv field consistent with metrics-worker and api-gateway", async () => {
+    // values=[8,9,10,11,12]: avg=10, variance=2, std_dev=sqrt(2), cv=sqrt(2)/10
+    for (const v of [8, 9, 10, 11, 12]) {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "rtt", value: v });
+    }
+    const res = await request(app).get("/api/v1/dashboard/metrics/rtt/stats");
+    expect(res.status).toBe(200);
+    expect(res.body.cv).toBeCloseTo(Math.sqrt(2) / 10, 9);
+  });
+
+  it("returns cv=0 in stats when avg is zero", async () => {
+    for (const v of [-5, 0, 5]) {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "delta", value: v });
+    }
+    const res = await request(app).get("/api/v1/dashboard/metrics/delta/stats");
+    expect(res.status).toBe(200);
+    expect(res.body.avg).toBe(0);
+    expect(res.body.cv).toBe(0);
+  });
 });
 
 describe("GET /api/v1/dashboard/metrics/:name/latest", () => {
@@ -805,6 +829,49 @@ describe("computeStats helper", () => {
     })));
     expect(stats.variance).toBeCloseTo(125, 6);
     expect(stats.std_dev).toBeCloseTo(Math.sqrt(125), 6);
+  });
+
+  it("computes cv = std_dev / |avg| (matches metrics-worker formula)", () => {
+    const ts = new Date().toISOString();
+    // values=[8,9,10,11,12]: avg=10, variance=2, std_dev=sqrt(2), cv=sqrt(2)/10
+    const stats = computeStats("rtt", [8, 9, 10, 11, 12].map((v) => ({
+      name: "rtt",
+      value: v,
+      recorded_at: ts,
+    })));
+    expect(stats.cv).toBeCloseTo(Math.sqrt(2) / 10, 9);
+  });
+
+  it("returns cv=0 when avg is zero (0/0 undefined case)", () => {
+    const ts = new Date().toISOString();
+    const stats = computeStats("delta", [
+      { name: "delta", value: -5, recorded_at: ts },
+      { name: "delta", value: 0, recorded_at: ts },
+      { name: "delta", value: 5, recorded_at: ts },
+    ]);
+    expect(stats.avg).toBe(0);
+    expect(stats.cv).toBe(0);
+  });
+
+  it("returns cv=0 for constant input (std_dev=0)", () => {
+    const ts = new Date().toISOString();
+    const stats = computeStats(
+      "flat",
+      Array.from({ length: 4 }, () => ({ name: "flat", value: 42, recorded_at: ts })),
+    );
+    expect(stats.cv).toBe(0);
+  });
+
+  it("returns cv >= 0 even when avg is negative", () => {
+    const ts = new Date().toISOString();
+    // values=[-12,-10,-8]: avg=-10, variance=(4+0+4)/3=8/3, cv=sqrt(8/3)/10
+    const stats = computeStats("neg", [-12, -10, -8].map((v) => ({
+      name: "neg",
+      value: v,
+      recorded_at: ts,
+    })));
+    expect(stats.cv).toBeCloseTo(Math.sqrt(8 / 3) / 10, 9);
+    expect(stats.cv).toBeGreaterThanOrEqual(0);
   });
 });
 
