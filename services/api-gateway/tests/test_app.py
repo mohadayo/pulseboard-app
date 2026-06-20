@@ -521,6 +521,53 @@ def test_get_metric_stats_std_dev_respects_time_filter():
     assert data_a["std_dev"] == 0.0
 
 
+def test_get_metric_stats_includes_cv_field():
+    # レスポンス JSON に cv フィールドが含まれることを確認（消費側 API の保証）。
+    for v in [10.0, 20.0, 30.0]:
+        client.post("/api/v1/metrics", json={"name": "cpu", "value": v})
+    data = client.get("/api/v1/metrics/cpu/stats").json()
+    assert "cv" in data
+
+
+def test_get_metric_stats_cv_population_definition():
+    # values=[8,9,10,11,12]: avg=10, variance=((−2)^2+(−1)^2+0+1^2+2^2)/5=2
+    # std_dev=sqrt(2), cv=sqrt(2)/10
+    for v in [8.0, 9.0, 10.0, 11.0, 12.0]:
+        client.post("/api/v1/metrics", json={"name": "rtt", "value": v})
+    data = client.get("/api/v1/metrics/rtt/stats").json()
+    expected_cv = math.sqrt(2) / 10
+    assert data["cv"] == pytest.approx(expected_cv, rel=1e-9)
+
+
+def test_get_metric_stats_cv_zero_when_avg_is_zero():
+    # avg = 0 のときは 0/0 不定なので cv = 0.0 を返す。
+    for v in [-5.0, 0.0, 5.0]:
+        client.post("/api/v1/metrics", json={"name": "delta", "value": v})
+    data = client.get("/api/v1/metrics/delta/stats").json()
+    assert data["avg"] == 0.0
+    assert data["cv"] == 0.0
+
+
+def test_get_metric_stats_cv_zero_for_constant_values():
+    # 定数入力は std_dev=0 なので cv=0。
+    for _ in range(5):
+        client.post("/api/v1/metrics", json={"name": "flat", "value": 42.0})
+    data = client.get("/api/v1/metrics/flat/stats").json()
+    assert data["cv"] == 0.0
+
+
+def test_get_metric_stats_cv_positive_for_negative_avg():
+    # avg < 0 でも |avg| を使うため cv は非負になる。
+    for v in [-12.0, -10.0, -8.0]:
+        client.post("/api/v1/metrics", json={"name": "neg", "value": v})
+    data = client.get("/api/v1/metrics/neg/stats").json()
+    # avg = -10, variance = (4+0+4)/3 = 8/3, std_dev = sqrt(8/3)
+    # cv = sqrt(8/3) / 10
+    expected_cv = math.sqrt(8.0 / 3.0) / 10
+    assert data["cv"] == pytest.approx(expected_cv, rel=1e-9)
+    assert data["cv"] >= 0
+
+
 def test_get_metrics_by_name_pagination():
     for v in range(5):
         client.post("/api/v1/metrics", json={"name": "load", "value": float(v)})
