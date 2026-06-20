@@ -326,6 +326,10 @@ def get_metric_stats(
     # 分散 0、std_dev 0 になる（ゼロ除算ではない）。
     variance = sum((v - avg) ** 2 for v in values) / count
     std_dev = math.sqrt(variance)
+    # 変動係数 (Coefficient of Variation): std_dev / |avg|。
+    # `metrics-worker` の `/api/v1/aggregate` と定義を統一する。
+    # avg == 0 の場合は定義不能 (0/0) なので 0.0 を返す。
+    cv = std_dev / abs(avg) if avg != 0 else 0.0
     stats = {
         "name": metric_name,
         "count": count,
@@ -340,6 +344,7 @@ def get_metric_stats(
         # の関係を保つ（`count == 1` は両者とも 0.0）。
         "variance": variance,
         "std_dev": std_dev,
+        "cv": cv,
         "p50": _percentile(sorted_values, 50),
         "p95": _percentile(sorted_values, 95),
         "p99": _percentile(sorted_values, 99),
