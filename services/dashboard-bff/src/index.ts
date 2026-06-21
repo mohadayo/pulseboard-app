@@ -309,6 +309,11 @@ interface TimeseriesBucket {
   min: number;
   max: number;
   avg: number;
+  // 母集団分散・母標準偏差・変動係数。`computeStats` / `api-gateway` /
+  // `metrics-worker` と同一の定義（除数 n、avg=0 のとき cv=0）。
+  variance: number;
+  std_dev: number;
+  cv: number;
   p50: number;
   p95: number;
   p99: number;
@@ -344,12 +349,20 @@ function bucketByTime(
     const values = buckets.get(bucketStart)!;
     const sorted = [...values].sort((a, b) => a - b);
     const sum = values.reduce((acc, v) => acc + v, 0);
+    const avg = sum / values.length;
+    const variance =
+      values.reduce((acc, v) => acc + (v - avg) * (v - avg), 0) / values.length;
+    const std_dev = Math.sqrt(variance);
+    const cv = avg !== 0 ? std_dev / Math.abs(avg) : 0;
     result.push({
       bucket_start: new Date(bucketStart).toISOString(),
       total: values.length,
       min: sorted[0],
       max: sorted[sorted.length - 1],
-      avg: sum / values.length,
+      avg,
+      variance,
+      std_dev,
+      cv,
       p50: percentile(sorted, 50),
       p95: percentile(sorted, 95),
       p99: percentile(sorted, 99),
