@@ -1693,6 +1693,71 @@ describe("GET /api/v1/dashboard/metrics/:name/timeseries", () => {
     expect(res.body.buckets[0].max).toBe(10);
   });
 
+  it("buckets include std_dev, variance, cv fields", async () => {
+    // values=[8,9,10,11,12]: avg=10, variance=2, std_dev=sqrt(2), cv=sqrt(2)/10
+    seed("cpu", 8, "2026-06-01T12:00:01.000Z");
+    seed("cpu", 9, "2026-06-01T12:00:02.000Z");
+    seed("cpu", 10, "2026-06-01T12:00:03.000Z");
+    seed("cpu", 11, "2026-06-01T12:00:04.000Z");
+    seed("cpu", 12, "2026-06-01T12:00:05.000Z");
+
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries",
+    );
+    expect(res.status).toBe(200);
+    const b0 = res.body.buckets[0];
+    expect(b0.avg).toBe(10);
+    expect(b0.variance).toBeCloseTo(2, 9);
+    expect(b0.std_dev).toBeCloseTo(Math.sqrt(2), 9);
+    expect(b0.cv).toBeCloseTo(Math.sqrt(2) / 10, 9);
+  });
+
+  it("returns cv=0 in bucket when avg is zero", async () => {
+    // avg = (-5 + 0 + 5) / 3 = 0 → cv = 0
+    seed("cpu", -5, "2026-06-01T12:00:01.000Z");
+    seed("cpu", 0, "2026-06-01T12:00:02.000Z");
+    seed("cpu", 5, "2026-06-01T12:00:03.000Z");
+
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries",
+    );
+    expect(res.status).toBe(200);
+    const b0 = res.body.buckets[0];
+    expect(b0.avg).toBe(0);
+    expect(b0.cv).toBe(0);
+  });
+
+  it("returns cv=0 in bucket for constant input (std_dev=0)", async () => {
+    seed("cpu", 7, "2026-06-01T12:00:01.000Z");
+    seed("cpu", 7, "2026-06-01T12:00:02.000Z");
+    seed("cpu", 7, "2026-06-01T12:00:03.000Z");
+
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries",
+    );
+    expect(res.status).toBe(200);
+    const b0 = res.body.buckets[0];
+    expect(b0.variance).toBe(0);
+    expect(b0.std_dev).toBe(0);
+    expect(b0.cv).toBe(0);
+  });
+
+  it("cv in bucket is consistent with std_dev / |avg|", async () => {
+    seed("cpu", 2, "2026-06-01T12:00:01.000Z");
+    seed("cpu", 4, "2026-06-01T12:00:02.000Z");
+    seed("cpu", 6, "2026-06-01T12:00:03.000Z");
+
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries",
+    );
+    expect(res.status).toBe(200);
+    const b0 = res.body.buckets[0];
+    // std_dev^2 == variance
+    expect(b0.std_dev * b0.std_dev).toBeCloseTo(b0.variance, 9);
+    // cv == std_dev / |avg|
+    expect(b0.cv).toBeCloseTo(b0.std_dev / Math.abs(b0.avg), 9);
+  });
+
   it("does not collide with /:name route (timeseries word in URL is treated as a subroute)", async () => {
     // `/:name/timeseries` の登録順により、`timeseries` という名前のメトリクスを
     // 投入しても catch-all `/:name` ではなく timeseries エンドポイントに到達する。
