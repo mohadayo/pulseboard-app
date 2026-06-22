@@ -46,6 +46,14 @@ type AggregateResponse struct {
 	// 安定性比較に用いられる。`avg == 0` の場合は定義不能 (0/0) なので 0 を返す
 	// （定数 0 入力など、変動が全くない退化ケースをエンコード可能な値に寄せる）。
 	CV float64 `json:"cv"`
+	// 母集団歪度 (population skewness): (1/n) Σ((xᵢ - μ)³) / σ³。
+	// 既存 variance / std_dev と同じ母集団 (Bessel 補正なし) で計算する。
+	// 「分布が対称か、右に裾を引いているか / 左に裾を引いているか」を判定し、
+	// 同一 avg / std_dev でも形状が異なるレイテンシ分布を区別する。
+	// σ = 0（全要素同値）の場合は定義不能 (0/0) なので 0 を返す（cv の
+	// `avg = 0` ケースと同じ規約で、変動が全くない退化ケースをエンコード可能な
+	// 値に寄せる）。
+	Skewness float64 `json:"skewness"`
 }
 
 type HealthResponse struct {
@@ -207,7 +215,7 @@ func percentile(sorted []float64, pct float64) float64 {
 func (a AggregateResponse) hasNonFinite() bool {
 	for _, v := range []float64{
 		a.Sum, a.Avg, a.Min, a.Max, a.Range,
-		a.Variance, a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P90, a.P95, a.P99, a.CV,
+		a.Variance, a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P90, a.P95, a.P99, a.CV, a.Skewness,
 	} {
 		if math.IsInf(v, 0) || math.IsNaN(v) {
 			return true
@@ -254,6 +262,20 @@ func computeAggregate(values []float64) AggregateResponse {
 	if avg != 0 {
 		cv = stdDev / math.Abs(avg)
 	}
+	// 母集団歪度: (1/n) Σ((xᵢ - μ)³) / σ³。
+	// σ = 0（定数入力）の場合は定義不能 (0/0) なので 0 を返す（cv の avg = 0 と同じ規約）。
+	// 既存 variance ループとは分離した独立パスで Σ(x-μ)³ を算出する。性能影響は O(n) で
+	// 既存パス数 (sum/min/max → variance) と比較しても定数倍にとどまる。
+	skewness := 0.0
+	if stdDev > 0 {
+		m3 := 0.0
+		for _, v := range values {
+			diff := v - avg
+			m3 += diff * diff * diff
+		}
+		m3 /= float64(n)
+		skewness = m3 / (stdDev * stdDev * stdDev)
+	}
 	return AggregateResponse{
 		Count:    n,
 		Sum:      sum,
@@ -271,6 +293,7 @@ func computeAggregate(values []float64) AggregateResponse {
 		P95:      percentile(sorted, 95),
 		P99:      percentile(sorted, 99),
 		CV:       cv,
+		Skewness: skewness,
 	}
 }
 

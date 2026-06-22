@@ -221,10 +221,65 @@ func TestAggregateHandlerIncludesNewFields(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
 		t.Fatalf("failed to decode raw: %v", err)
 	}
-	for _, key := range []string{"median", "p95", "p99"} {
+	for _, key := range []string{"median", "p95", "p99", "skewness"} {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("response JSON missing key %q", key)
 		}
+	}
+}
+
+// TestComputeAggregateSkewness は population skewness が以下の規約で計算されることを検証する:
+// - 完全に対称な分布: ≈ 0
+// - 右裾分布 (positive skew): > 0
+// - 左裾分布 (negative skew): < 0
+// - 定数入力 (σ=0): 0
+// - 単一要素: 0
+func TestComputeAggregateSkewness(t *testing.T) {
+	// 対称分布 {1,2,3,4,5}: avg=3, σ²=2, Σ(x-μ)³ = (-2)³+(-1)³+0+1+8 = 0 → skewness=0
+	if result := computeAggregate([]float64{1, 2, 3, 4, 5}); !approxEqual(result.Skewness, 0, 1e-9) {
+		t.Errorf("symmetric distribution {1..5}: expected skewness 0, got %f", result.Skewness)
+	}
+
+	// 右裾分布 (positive skew): {1,1,1,1,10} → 大きい値が少数で離れている
+	if result := computeAggregate([]float64{1, 1, 1, 1, 10}); result.Skewness <= 0 {
+		t.Errorf("right-skewed distribution: expected skewness > 0, got %f", result.Skewness)
+	}
+
+	// 左裾分布 (negative skew): {1,10,10,10,10} → 小さい値が少数で離れている
+	if result := computeAggregate([]float64{1, 10, 10, 10, 10}); result.Skewness >= 0 {
+		t.Errorf("left-skewed distribution: expected skewness < 0, got %f", result.Skewness)
+	}
+
+	// 定数入力 (σ=0): 定義不能 → 0
+	if result := computeAggregate([]float64{5, 5, 5, 5}); result.Skewness != 0 {
+		t.Errorf("constant input: expected skewness 0 (σ=0 degenerate), got %f", result.Skewness)
+	}
+
+	// 単一要素: σ=0 → 0
+	if result := computeAggregate([]float64{42}); result.Skewness != 0 {
+		t.Errorf("single element: expected skewness 0, got %f", result.Skewness)
+	}
+}
+
+// TestComputeAggregateSkewnessExactValue は既知の入力での skewness 値を厳密に検証する。
+// 入力 [0,0,0,0,5] → avg=1, σ²=4, σ=2
+//   Σ(x-1)³ = (-1)³*4 + 4³ = -4 + 64 = 60
+//   m3 = 60 / 5 = 12
+//   skewness = 12 / 8 = 1.5
+func TestComputeAggregateSkewnessExactValue(t *testing.T) {
+	result := computeAggregate([]float64{0, 0, 0, 0, 5})
+	if !approxEqual(result.Skewness, 1.5, 1e-9) {
+		t.Errorf("expected skewness 1.5, got %f", result.Skewness)
+	}
+}
+
+// TestComputeAggregateSkewnessOpposingSign は対称性のあるテストケースで
+// 入力を反転させた場合に skewness の符号が反転することを検証する。
+func TestComputeAggregateSkewnessOpposingSign(t *testing.T) {
+	right := computeAggregate([]float64{1, 1, 1, 1, 10})
+	left := computeAggregate([]float64{1, 10, 10, 10, 10})
+	if !approxEqual(right.Skewness, -left.Skewness, 1e-9) {
+		t.Errorf("expected symmetric skewness (right=%f, -left=%f)", right.Skewness, -left.Skewness)
 	}
 }
 
@@ -361,6 +416,12 @@ func TestAggregateResponseHasNonFinite(t *testing.T) {
 	withNaN.StdDev = math.NaN()
 	if !withNaN.hasNonFinite() {
 		t.Error("expected response with NaN std_dev to report non-finite")
+	}
+	// Skewness の Inf/NaN もガードレールで弾かれることを検証する。
+	withInfSkew := finite
+	withInfSkew.Skewness = math.Inf(-1)
+	if !withInfSkew.hasNonFinite() {
+		t.Error("expected response with -Inf skewness to report non-finite")
 	}
 }
 
