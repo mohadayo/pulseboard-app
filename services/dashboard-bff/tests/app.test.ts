@@ -521,6 +521,29 @@ describe("GET /api/v1/dashboard/metrics/:name/stats", () => {
     expect(res.body.avg).toBe(0);
     expect(res.body.cv).toBe(0);
   });
+
+  it("exposes skewness field consistent with metrics-worker and api-gateway", async () => {
+    // values=[1,2,3,4,10]: avg=4, std_dev=sqrt(10), m3=36 → skewness = 3.6/sqrt(10)
+    for (const v of [1, 2, 3, 4, 10]) {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "rsk", value: v });
+    }
+    const res = await request(app).get("/api/v1/dashboard/metrics/rsk/stats");
+    expect(res.status).toBe(200);
+    expect(res.body.skewness).toBeCloseTo(3.6 / Math.sqrt(10), 9);
+  });
+
+  it("returns skewness=0 in stats for constant input", async () => {
+    for (let i = 0; i < 5; i++) {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "flat", value: 42 });
+    }
+    const res = await request(app).get("/api/v1/dashboard/metrics/flat/stats");
+    expect(res.status).toBe(200);
+    expect(res.body.skewness).toBe(0);
+  });
 });
 
 describe("GET /api/v1/dashboard/metrics/:name/latest", () => {
@@ -872,6 +895,81 @@ describe("computeStats helper", () => {
     })));
     expect(stats.cv).toBeCloseTo(Math.sqrt(8 / 3) / 10, 9);
     expect(stats.cv).toBeGreaterThanOrEqual(0);
+  });
+
+  it("returns skewness=0 for symmetric distribution", () => {
+    const ts = new Date().toISOString();
+    // 対称分布 {1,2,3,4,5}: avg=3, Σ(x-μ)³ = -8 -1 +0 +1 +8 = 0 → skewness=0
+    const stats = computeStats(
+      "sym",
+      [1, 2, 3, 4, 5].map((v) => ({ name: "sym", value: v, recorded_at: ts })),
+    );
+    expect(stats.skewness).toBeCloseTo(0, 12);
+  });
+
+  it("returns positive skewness for right-tailed distribution", () => {
+    const ts = new Date().toISOString();
+    // 右裾分布 {1,1,1,1,10}: 大きな値が少数で離れている → 正の歪度
+    const stats = computeStats(
+      "right",
+      [1, 1, 1, 1, 10].map((v) => ({ name: "right", value: v, recorded_at: ts })),
+    );
+    expect(stats.skewness).toBeGreaterThan(0);
+  });
+
+  it("returns negative skewness for left-tailed distribution", () => {
+    const ts = new Date().toISOString();
+    // 左裾分布 {1,10,10,10,10}: 小さな値が少数で離れている → 負の歪度
+    const stats = computeStats(
+      "left",
+      [1, 10, 10, 10, 10].map((v) => ({ name: "left", value: v, recorded_at: ts })),
+    );
+    expect(stats.skewness).toBeLessThan(0);
+  });
+
+  it("returns skewness=0 for constant input (std_dev=0)", () => {
+    const ts = new Date().toISOString();
+    // 定数入力は std_dev=0 で歪度は定義不能なので 0 を返す（cv の avg=0 と同じ規約）。
+    const stats = computeStats(
+      "flat",
+      Array.from({ length: 5 }, () => ({ name: "flat", value: 42, recorded_at: ts })),
+    );
+    expect(stats.skewness).toBe(0);
+  });
+
+  it("returns skewness=0 for single value", () => {
+    const ts = new Date().toISOString();
+    const stats = computeStats("one", [{ name: "one", value: 7, recorded_at: ts }]);
+    expect(stats.skewness).toBe(0);
+  });
+
+  it("computes skewness exactly for known input (matches metrics-worker formula)", () => {
+    const ts = new Date().toISOString();
+    // values=[1,2,3,4,10]:
+    //   avg = 4
+    //   variance = (9 + 4 + 1 + 0 + 36) / 5 = 10
+    //   std_dev  = sqrt(10)
+    //   m3 = (-27 -8 -1 + 0 + 216) / 5 = 36
+    //   skewness = 36 / (sqrt(10))^3 = 3.6 / sqrt(10)
+    const stats = computeStats(
+      "rsk",
+      [1, 2, 3, 4, 10].map((v) => ({ name: "rsk", value: v, recorded_at: ts })),
+    );
+    expect(stats.skewness).toBeCloseTo(3.6 / Math.sqrt(10), 9);
+  });
+
+  it("inverts skewness sign when input is reflected around avg", () => {
+    const ts = new Date().toISOString();
+    const right = computeStats(
+      "r",
+      [1, 1, 1, 1, 10].map((v) => ({ name: "r", value: v, recorded_at: ts })),
+    );
+    const avgR = 2.8; // (1+1+1+1+10)/5
+    const left = computeStats(
+      "l",
+      [1, 1, 1, 1, 10].map((v) => ({ name: "l", value: 2 * avgR - v, recorded_at: ts })),
+    );
+    expect(right.skewness).toBeCloseTo(-left.skewness, 9);
   });
 });
 

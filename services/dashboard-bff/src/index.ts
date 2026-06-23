@@ -203,6 +203,11 @@ interface DashboardStats {
   // `api-gateway` および `metrics-worker` と定義を統一する。
   // avg === 0 の場合は定義不能 (0/0) なので 0 を返す。
   cv: number;
+  // 母集団歪度 (population skewness): (1/n) Σ((xᵢ - μ)³) / σ³。
+  // `metrics-worker` の `/api/v1/aggregate` および `api-gateway` の
+  // `/api/v1/metrics/{name}/stats` と式・退化ケース処理を統一する。
+  // σ = 0（定数入力 / 単一観測）の場合は定義不能 (0/0) なので 0 を返す。
+  skewness: number;
   p50: number;
   p95: number;
   p99: number;
@@ -388,6 +393,19 @@ function computeStats(name: string, metrics: DashboardMetric[]): DashboardStats 
   // 変動係数: std_dev / |avg|。avg === 0 は定義不能なので 0 を返す
   // （`api-gateway` および `metrics-worker` と定義を統一）。
   const cv = avg !== 0 ? std_dev / Math.abs(avg) : 0;
+  // 母集団歪度: (1/n) Σ((xᵢ - μ)³) / σ³。`metrics-worker` の Go 実装と
+  // `api-gateway` の Python 実装と完全に式を揃える。std_dev = 0 は定義不能
+  // (0/0) なので 0 を返す（cv の avg=0 と同じ防御）。既存 variance 用ループとは
+  // 分離した独立パスで Σ(x-μ)³ を集めるが、O(n) のままで定数倍。
+  let skewness = 0;
+  if (std_dev > 0) {
+    const m3 =
+      values.reduce((acc, v) => {
+        const diff = v - avg;
+        return acc + diff * diff * diff;
+      }, 0) / count;
+    skewness = m3 / (std_dev * std_dev * std_dev);
+  }
   return {
     name,
     count,
@@ -398,6 +416,7 @@ function computeStats(name: string, metrics: DashboardMetric[]): DashboardStats 
     variance,
     std_dev,
     cv,
+    skewness,
     p50: percentile(sorted, 50),
     p95: percentile(sorted, 95),
     p99: percentile(sorted, 99),

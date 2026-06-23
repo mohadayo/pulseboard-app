@@ -330,6 +330,15 @@ def get_metric_stats(
     # `metrics-worker` の `/api/v1/aggregate` と定義を統一する。
     # avg == 0 の場合は定義不能 (0/0) なので 0.0 を返す。
     cv = std_dev / abs(avg) if avg != 0 else 0.0
+    # 母集団歪度 (population skewness): (1/n) Σ((xᵢ - μ)³) / σ³。
+    # `metrics-worker` の `/api/v1/aggregate` と定義を統一し、Bessel 補正なしの
+    # 母集団分散をベースに算出する。σ = 0（定数入力 / 単一観測）の場合は定義不能
+    # (0/0) なので 0.0 を返す（`cv` の avg=0 と同じ規約）。
+    if std_dev > 0:
+        m3 = sum((v - avg) ** 3 for v in values) / count
+        skewness = m3 / (std_dev ** 3)
+    else:
+        skewness = 0.0
     stats = {
         "name": metric_name,
         "count": count,
@@ -345,6 +354,9 @@ def get_metric_stats(
         "variance": variance,
         "std_dev": std_dev,
         "cv": cv,
+        # 母集団歪度。`metrics-worker` の `/api/v1/aggregate` および
+        # `dashboard-bff` の `computeStats` と式・退化ケース処理を統一する。
+        "skewness": skewness,
         "p50": _percentile(sorted_values, 50),
         "p95": _percentile(sorted_values, 95),
         "p99": _percentile(sorted_values, 99),
