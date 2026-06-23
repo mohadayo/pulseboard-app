@@ -568,6 +568,81 @@ def test_get_metric_stats_cv_positive_for_negative_avg():
     assert data["cv"] >= 0
 
 
+def test_get_metric_stats_includes_skewness_field():
+    # レスポンス JSON に skewness フィールドが含まれることを確認（消費側 API の保証）。
+    for v in [10.0, 20.0, 30.0]:
+        client.post("/api/v1/metrics", json={"name": "cpu", "value": v})
+    data = client.get("/api/v1/metrics/cpu/stats").json()
+    assert "skewness" in data
+
+
+def test_get_metric_stats_skewness_symmetric_distribution_is_zero():
+    # 対称分布 {1,2,3,4,5}: avg=3, Σ(x-μ)³ = -8 -1 +0 +1 +8 = 0 → skewness=0
+    for v in [1.0, 2.0, 3.0, 4.0, 5.0]:
+        client.post("/api/v1/metrics", json={"name": "sym", "value": v})
+    data = client.get("/api/v1/metrics/sym/stats").json()
+    assert data["skewness"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_get_metric_stats_skewness_right_tailed_is_positive():
+    # 右裾分布 {1,1,1,1,10}: 大きな値が少数で離れている → 正の歪度
+    for v in [1.0, 1.0, 1.0, 1.0, 10.0]:
+        client.post("/api/v1/metrics", json={"name": "right", "value": v})
+    data = client.get("/api/v1/metrics/right/stats").json()
+    assert data["skewness"] > 0
+
+
+def test_get_metric_stats_skewness_left_tailed_is_negative():
+    # 左裾分布 {1,10,10,10,10}: 小さな値が少数で離れている → 負の歪度
+    for v in [1.0, 10.0, 10.0, 10.0, 10.0]:
+        client.post("/api/v1/metrics", json={"name": "left", "value": v})
+    data = client.get("/api/v1/metrics/left/stats").json()
+    assert data["skewness"] < 0
+
+
+def test_get_metric_stats_skewness_constant_input_is_zero():
+    # 定数入力は std_dev=0 で歪度は定義不能なので 0 を返す（cv の avg=0 と同じ規約）。
+    for _ in range(5):
+        client.post("/api/v1/metrics", json={"name": "flat", "value": 42.0})
+    data = client.get("/api/v1/metrics/flat/stats").json()
+    assert data["skewness"] == 0.0
+
+
+def test_get_metric_stats_skewness_single_value_is_zero():
+    # 単一観測は std_dev=0 なので 0 を返す。
+    client.post("/api/v1/metrics", json={"name": "one", "value": 7.0})
+    data = client.get("/api/v1/metrics/one/stats").json()
+    assert data["skewness"] == 0.0
+
+
+def test_get_metric_stats_skewness_exact_value():
+    # 既知厳密値で検証する。values=[1,2,3,4,10]:
+    #   avg = 4
+    #   Σ(x-μ)² = 9 + 4 + 1 + 0 + 36 = 50 → variance = 10, std_dev = sqrt(10)
+    #   Σ(x-μ)³ = -27 - 8 - 1 + 0 + 216 = 180 → m3 = 36
+    #   skewness = 36 / (sqrt(10))³ = 36 / (10 * sqrt(10)) = 3.6 / sqrt(10)
+    for v in [1.0, 2.0, 3.0, 4.0, 10.0]:
+        client.post("/api/v1/metrics", json={"name": "rsk", "value": v})
+    data = client.get("/api/v1/metrics/rsk/stats").json()
+    expected = 3.6 / math.sqrt(10.0)
+    assert data["skewness"] == pytest.approx(expected, rel=1e-9)
+
+
+def test_get_metric_stats_skewness_sign_inverts_when_reflected():
+    # 入力を反転 (v → 2*avg - v) させると skewness の符号も反転する。
+    # right の {1,1,1,1,10} を avg=2.8 で反転: {4.6,4.6,4.6,4.6,-4.4}
+    for v in [1.0, 1.0, 1.0, 1.0, 10.0]:
+        client.post("/api/v1/metrics", json={"name": "r", "value": v})
+    right = client.get("/api/v1/metrics/r/stats").json()["skewness"]
+
+    avg_r = 2.8  # = (1+1+1+1+10)/5
+    for v in [1.0, 1.0, 1.0, 1.0, 10.0]:
+        client.post("/api/v1/metrics", json={"name": "l", "value": 2 * avg_r - v})
+    left = client.get("/api/v1/metrics/l/stats").json()["skewness"]
+
+    assert right == pytest.approx(-left, rel=1e-9)
+
+
 def test_get_metrics_by_name_pagination():
     for v in range(5):
         client.post("/api/v1/metrics", json={"name": "load", "value": float(v)})
