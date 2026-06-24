@@ -319,6 +319,11 @@ interface TimeseriesBucket {
   variance: number;
   std_dev: number;
   cv: number;
+  // 母集団歪度 (population skewness): (1/n) Σ((xᵢ - μ)³) / σ³。
+  // `computeStats` および上流の `metrics-worker` (Go) / `api-gateway` (Python)
+  // と完全に同じ式を用い、3 サービス間で定義を統一する。σ=0（定数入力 /
+  // 単一観測）のときは定義不能なので 0.0 を返す（cv の avg=0 と同じ防御）。
+  skewness: number;
   p50: number;
   p95: number;
   p99: number;
@@ -359,6 +364,18 @@ function bucketByTime(
       values.reduce((acc, v) => acc + (v - avg) * (v - avg), 0) / values.length;
     const std_dev = Math.sqrt(variance);
     const cv = avg !== 0 ? std_dev / Math.abs(avg) : 0;
+    // 母集団歪度: (1/n) Σ((xᵢ - μ)³) / σ³。`computeStats` および上流の
+    // `metrics-worker` / `api-gateway` と完全に式を揃える。σ = 0 のときは
+    // 定義不能 (0/0) なので 0 を返す（cv の avg=0 と同じ防御）。
+    let skewness = 0;
+    if (std_dev > 0) {
+      const m3 =
+        values.reduce((acc, v) => {
+          const diff = v - avg;
+          return acc + diff * diff * diff;
+        }, 0) / values.length;
+      skewness = m3 / (std_dev * std_dev * std_dev);
+    }
     result.push({
       bucket_start: new Date(bucketStart).toISOString(),
       total: values.length,
@@ -368,6 +385,7 @@ function bucketByTime(
       variance,
       std_dev,
       cv,
+      skewness,
       p50: percentile(sorted, 50),
       p95: percentile(sorted, 95),
       p99: percentile(sorted, 99),
