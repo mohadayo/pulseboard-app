@@ -1856,6 +1856,99 @@ describe("GET /api/v1/dashboard/metrics/:name/timeseries", () => {
     expect(b0.cv).toBeCloseTo(b0.std_dev / Math.abs(b0.avg), 9);
   });
 
+  it("buckets include skewness field consistent with computeStats and metrics-worker", async () => {
+    // values=[1,2,3,4,10]: avg=4, variance=10, std_dev=sqrt(10),
+    // m3 = ((-3)^3 + (-2)^3 + (-1)^3 + 0 + 6^3) / 5 = (-27-8-1+0+216)/5 = 180/5 = 36
+    // skewness = 36 / (sqrt(10))^3 = 36 / (10*sqrt(10)) = 3.6 / sqrt(10)
+    seed("cpu", 1, "2026-06-01T12:00:01.000Z");
+    seed("cpu", 2, "2026-06-01T12:00:02.000Z");
+    seed("cpu", 3, "2026-06-01T12:00:03.000Z");
+    seed("cpu", 4, "2026-06-01T12:00:04.000Z");
+    seed("cpu", 10, "2026-06-01T12:00:05.000Z");
+
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries",
+    );
+    expect(res.status).toBe(200);
+    const b0 = res.body.buckets[0];
+    expect(b0.skewness).toBeCloseTo(3.6 / Math.sqrt(10), 9);
+  });
+
+  it("returns skewness=0 in bucket for symmetric distribution", async () => {
+    // 対称分布 {1,2,3,4,5}: avg=3, Σ(x-μ)³ = -8 -1 +0 +1 +8 = 0 → skewness=0
+    seed("cpu", 1, "2026-06-01T12:00:01.000Z");
+    seed("cpu", 2, "2026-06-01T12:00:02.000Z");
+    seed("cpu", 3, "2026-06-01T12:00:03.000Z");
+    seed("cpu", 4, "2026-06-01T12:00:04.000Z");
+    seed("cpu", 5, "2026-06-01T12:00:05.000Z");
+
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries",
+    );
+    expect(res.status).toBe(200);
+    const b0 = res.body.buckets[0];
+    expect(b0.skewness).toBeCloseTo(0, 12);
+  });
+
+  it("returns positive skewness in bucket for right-tailed distribution", async () => {
+    // 右裾分布 {1,1,1,1,10}: avg=2.8 → skewness > 0
+    seed("cpu", 1, "2026-06-01T12:00:01.000Z");
+    seed("cpu", 1, "2026-06-01T12:00:02.000Z");
+    seed("cpu", 1, "2026-06-01T12:00:03.000Z");
+    seed("cpu", 1, "2026-06-01T12:00:04.000Z");
+    seed("cpu", 10, "2026-06-01T12:00:05.000Z");
+
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries",
+    );
+    expect(res.status).toBe(200);
+    const b0 = res.body.buckets[0];
+    expect(b0.skewness).toBeGreaterThan(0);
+  });
+
+  it("returns negative skewness in bucket for left-tailed distribution", async () => {
+    // 左裾分布 {1,10,10,10,10}: avg=8.2 → skewness < 0
+    seed("cpu", 1, "2026-06-01T12:00:01.000Z");
+    seed("cpu", 10, "2026-06-01T12:00:02.000Z");
+    seed("cpu", 10, "2026-06-01T12:00:03.000Z");
+    seed("cpu", 10, "2026-06-01T12:00:04.000Z");
+    seed("cpu", 10, "2026-06-01T12:00:05.000Z");
+
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries",
+    );
+    expect(res.status).toBe(200);
+    const b0 = res.body.buckets[0];
+    expect(b0.skewness).toBeLessThan(0);
+  });
+
+  it("returns skewness=0 in bucket for constant input (std_dev=0)", async () => {
+    seed("cpu", 7, "2026-06-01T12:00:01.000Z");
+    seed("cpu", 7, "2026-06-01T12:00:02.000Z");
+    seed("cpu", 7, "2026-06-01T12:00:03.000Z");
+
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries",
+    );
+    expect(res.status).toBe(200);
+    const b0 = res.body.buckets[0];
+    expect(b0.std_dev).toBe(0);
+    expect(b0.skewness).toBe(0);
+  });
+
+  it("returns skewness=0 in bucket for single observation (std_dev=0)", async () => {
+    seed("cpu", 42, "2026-06-01T12:00:01.000Z");
+
+    const res = await request(app).get(
+      "/api/v1/dashboard/metrics/cpu/timeseries",
+    );
+    expect(res.status).toBe(200);
+    const b0 = res.body.buckets[0];
+    expect(b0.total).toBe(1);
+    expect(b0.std_dev).toBe(0);
+    expect(b0.skewness).toBe(0);
+  });
+
   it("does not collide with /:name route (timeseries word in URL is treated as a subroute)", async () => {
     // `/:name/timeseries` の登録順により、`timeseries` という名前のメトリクスを
     // 投入しても catch-all `/:name` ではなく timeseries エンドポイントに到達する。
