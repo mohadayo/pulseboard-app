@@ -2,6 +2,7 @@ import logging
 import math
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -17,6 +18,35 @@ logging.basicConfig(
 logger = logging.getLogger("api-gateway")
 
 app = FastAPI(title="PulseBoard API Gateway", version="1.0.0")
+
+
+@app.middleware("http")
+async def access_log_middleware(request: Request, call_next):
+    """1 リクエスト 1 行のアクセスログを出力する。
+
+    既存の各ハンドラの ``logger.info(...)`` は機能単位の出来事を記録するもので、
+    すべてのリクエストにわたって「いつ・どのパスに・どの HTTP メソッドが来て・
+    結果は何で・どれだけかかったか」を一貫して見渡せる軸が無かった。
+    本ミドルウェアでレスポンス完了直前に method/path/status/duration_ms を
+    1 行に集約することで、ハンドラ側ログを追わなくとも遅延傾向や 4xx 偏りを
+    構造化ログから即座に追えるようにする。
+
+    ``time.perf_counter()`` を採用して、システム時刻の補正に左右されない
+    単調増加な計測を行う。レスポンスヘッダ ``X-Response-Time-Ms`` にも同値を
+    入れ、クライアント側 (ダッシュボード等) からも応答時間が観測可能になる。
+    """
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = round((time.perf_counter() - start) * 1000.0, 3)
+    logger.info(
+        "%s %s -> %d (%.3fms)",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+    )
+    response.headers["X-Response-Time-Ms"] = f"{duration_ms}"
+    return response
 
 
 def _parse_max_metrics() -> int:
