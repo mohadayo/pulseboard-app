@@ -24,6 +24,24 @@ def test_health():
     assert "timestamp" in data
 
 
+def test_access_log_middleware_sets_response_time_header():
+    # access_log_middleware が全レスポンスに X-Response-Time-Ms を付与すること。
+    # 値は perf_counter() ベースで非負の浮動小数（ミリ秒）。
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    header = resp.headers.get("X-Response-Time-Ms")
+    assert header is not None, "middleware should attach X-Response-Time-Ms"
+    value = float(header)
+    assert value >= 0.0
+
+
+def test_access_log_middleware_runs_on_404():
+    # 4xx 応答（未登録パス）に対しても middleware が実行されること。
+    resp = client.get("/api/v1/metrics/__nonexistent__/latest")
+    assert resp.status_code == 404
+    assert "X-Response-Time-Ms" in resp.headers
+
+
 def test_create_metric():
     resp = client.post("/api/v1/metrics", json={"name": "cpu_usage", "value": 72.5})
     assert resp.status_code == 201
