@@ -54,6 +54,14 @@ type AggregateResponse struct {
 	// `avg = 0` ケースと同じ規約で、変動が全くない退化ケースをエンコード可能な
 	// 値に寄せる）。
 	Skewness float64 `json:"skewness"`
+	// 母集団尖度 (population kurtosis): (1/n) Σ((xᵢ - μ)⁴) / σ⁴。
+	// 既存 variance / std_dev / skewness と同じ母集団 (Bessel 補正なし) で計算する。
+	// 「外れ値の出やすさ（裾の重さ）」を表し、正規分布で 3.0、heavy-tail 分布で > 3。
+	// 同一 avg / std_dev / skewness でも、平均近傍に集中しつつ稀に大きな外れ値が
+	// 出るサービスを heavy-tail として区別できる。
+	// σ = 0（定数入力）の場合は定義不能 (0/0) なので 0 を返す（skewness の
+	// σ=0 ケースと同じ規約）。
+	Kurtosis float64 `json:"kurtosis"`
 }
 
 type HealthResponse struct {
@@ -215,7 +223,7 @@ func percentile(sorted []float64, pct float64) float64 {
 func (a AggregateResponse) hasNonFinite() bool {
 	for _, v := range []float64{
 		a.Sum, a.Avg, a.Min, a.Max, a.Range,
-		a.Variance, a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P90, a.P95, a.P99, a.CV, a.Skewness,
+		a.Variance, a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P90, a.P95, a.P99, a.CV, a.Skewness, a.Kurtosis,
 	} {
 		if math.IsInf(v, 0) || math.IsNaN(v) {
 			return true
@@ -276,6 +284,21 @@ func computeAggregate(values []float64) AggregateResponse {
 		m3 /= float64(n)
 		skewness = m3 / (stdDev * stdDev * stdDev)
 	}
+	// 母集団尖度: (1/n) Σ((xᵢ - μ)⁴) / σ⁴。
+	// σ = 0（定数入力）の場合は定義不能 (0/0) なので 0 を返す（skewness の σ=0 と同じ規約）。
+	// skewness と独立した O(n) パスで Σ(x-μ)⁴ を集める。性能影響は定数倍にとどまる。
+	kurtosis := 0.0
+	if stdDev > 0 {
+		m4 := 0.0
+		for _, v := range values {
+			diff := v - avg
+			diff2 := diff * diff
+			m4 += diff2 * diff2
+		}
+		m4 /= float64(n)
+		sigma2 := stdDev * stdDev
+		kurtosis = m4 / (sigma2 * sigma2)
+	}
 	return AggregateResponse{
 		Count:    n,
 		Sum:      sum,
@@ -294,6 +317,7 @@ func computeAggregate(values []float64) AggregateResponse {
 		P99:      percentile(sorted, 99),
 		CV:       cv,
 		Skewness: skewness,
+		Kurtosis: kurtosis,
 	}
 }
 
