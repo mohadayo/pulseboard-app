@@ -369,6 +369,16 @@ def get_metric_stats(
         skewness = m3 / (std_dev ** 3)
     else:
         skewness = 0.0
+    # 母集団尖度 (population kurtosis): (1/n) Σ((xᵢ - μ)⁴) / σ⁴。
+    # `metrics-worker` の `/api/v1/aggregate` と式を統一し、Bessel 補正なしの
+    # 母集団分散をベースに算出する。正規分布の kurtosis は 3.0、heavy-tail は > 3。
+    # σ = 0（定数入力 / 単一観測）の場合は定義不能 (0/0) なので 0.0 を返す
+    # （`skewness` の σ=0 と同じ規約）。
+    if std_dev > 0:
+        m4 = sum((v - avg) ** 4 for v in values) / count
+        kurtosis = m4 / (std_dev ** 4)
+    else:
+        kurtosis = 0.0
     stats = {
         "name": metric_name,
         "count": count,
@@ -387,6 +397,9 @@ def get_metric_stats(
         # 母集団歪度。`metrics-worker` の `/api/v1/aggregate` および
         # `dashboard-bff` の `computeStats` と式・退化ケース処理を統一する。
         "skewness": skewness,
+        # 母集団尖度。`metrics-worker` の `/api/v1/aggregate` および
+        # `dashboard-bff` の `computeStats` と式・退化ケース処理を統一する。
+        "kurtosis": kurtosis,
         "p50": _percentile(sorted_values, 50),
         "p95": _percentile(sorted_values, 95),
         "p99": _percentile(sorted_values, 99),
