@@ -208,6 +208,12 @@ interface DashboardStats {
   // `/api/v1/metrics/{name}/stats` と式・退化ケース処理を統一する。
   // σ = 0（定数入力 / 単一観測）の場合は定義不能 (0/0) なので 0 を返す。
   skewness: number;
+  // 母集団尖度 (population kurtosis): (1/n) Σ((xᵢ - μ)⁴) / σ⁴。
+  // `metrics-worker` の `/api/v1/aggregate` および `api-gateway` の
+  // `/api/v1/metrics/{name}/stats` と式・退化ケース処理を統一する。
+  // 正規分布で 3.0、heavy-tail 分布で > 3。σ = 0 のときは定義不能 (0/0) なので 0 を返す
+  // （skewness の σ=0 と同じ規約）。
+  kurtosis: number;
   p50: number;
   p95: number;
   p99: number;
@@ -324,6 +330,10 @@ interface TimeseriesBucket {
   // と完全に同じ式を用い、3 サービス間で定義を統一する。σ=0（定数入力 /
   // 単一観測）のときは定義不能なので 0.0 を返す（cv の avg=0 と同じ防御）。
   skewness: number;
+  // 母集団尖度 (population kurtosis): (1/n) Σ((xᵢ - μ)⁴) / σ⁴。
+  // `computeStats` および上流の `metrics-worker` / `api-gateway` と式を統一する。
+  // σ = 0 のときは定義不能なので 0.0 を返す（skewness の σ=0 と同じ規約）。
+  kurtosis: number;
   p50: number;
   p95: number;
   p99: number;
@@ -376,6 +386,18 @@ function bucketByTime(
         }, 0) / values.length;
       skewness = m3 / (std_dev * std_dev * std_dev);
     }
+    // 母集団尖度: (1/n) Σ((xᵢ - μ)⁴) / σ⁴。上流の `metrics-worker` / `api-gateway`
+    // および `computeStats` と完全に同じ式・退化ケース処理（σ = 0 で 0）。
+    let kurtosis = 0;
+    if (std_dev > 0) {
+      const m4 =
+        values.reduce((acc, v) => {
+          const diff = v - avg;
+          return acc + diff * diff * diff * diff;
+        }, 0) / values.length;
+      const sigma2 = std_dev * std_dev;
+      kurtosis = m4 / (sigma2 * sigma2);
+    }
     result.push({
       bucket_start: new Date(bucketStart).toISOString(),
       total: values.length,
@@ -386,6 +408,7 @@ function bucketByTime(
       std_dev,
       cv,
       skewness,
+      kurtosis,
       p50: percentile(sorted, 50),
       p95: percentile(sorted, 95),
       p99: percentile(sorted, 99),
@@ -424,6 +447,18 @@ function computeStats(name: string, metrics: DashboardMetric[]): DashboardStats 
       }, 0) / count;
     skewness = m3 / (std_dev * std_dev * std_dev);
   }
+  // 母集団尖度: (1/n) Σ((xᵢ - μ)⁴) / σ⁴。上流の `metrics-worker` / `api-gateway` と
+  // 完全に式を揃える。std_dev = 0 は定義不能 (0/0) なので 0 を返す（skewness の σ=0 と同じ防御）。
+  let kurtosis = 0;
+  if (std_dev > 0) {
+    const m4 =
+      values.reduce((acc, v) => {
+        const diff = v - avg;
+        return acc + diff * diff * diff * diff;
+      }, 0) / count;
+    const sigma2 = std_dev * std_dev;
+    kurtosis = m4 / (sigma2 * sigma2);
+  }
   return {
     name,
     count,
@@ -435,6 +470,7 @@ function computeStats(name: string, metrics: DashboardMetric[]): DashboardStats 
     std_dev,
     cv,
     skewness,
+    kurtosis,
     p50: percentile(sorted, 50),
     p95: percentile(sorted, 95),
     p99: percentile(sorted, 99),

@@ -661,6 +661,66 @@ def test_get_metric_stats_skewness_sign_inverts_when_reflected():
     assert right == pytest.approx(-left, rel=1e-9)
 
 
+def test_get_metric_stats_includes_kurtosis_field():
+    # レスポンス JSON に kurtosis フィールドが含まれることを確認（消費側 API の保証）。
+    for v in [10.0, 20.0, 30.0]:
+        client.post("/api/v1/metrics", json={"name": "cpu", "value": v})
+    data = client.get("/api/v1/metrics/cpu/stats").json()
+    assert "kurtosis" in data
+
+
+def test_get_metric_stats_kurtosis_constant_input_is_zero():
+    # 定数入力は std_dev=0 で kurtosis は定義不能なので 0 を返す（skewness の σ=0 と同じ規約）。
+    for _ in range(5):
+        client.post("/api/v1/metrics", json={"name": "flat", "value": 42.0})
+    data = client.get("/api/v1/metrics/flat/stats").json()
+    assert data["kurtosis"] == 0.0
+
+
+def test_get_metric_stats_kurtosis_single_value_is_zero():
+    # 単一観測は std_dev=0 なので 0 を返す。
+    client.post("/api/v1/metrics", json={"name": "one", "value": 7.0})
+    data = client.get("/api/v1/metrics/one/stats").json()
+    assert data["kurtosis"] == 0.0
+
+
+def test_get_metric_stats_kurtosis_heavy_tail_is_above_three():
+    # heavy-tail 分布: 平均近傍に集中しつつ大きな外れ値が出るケース → kurtosis > 3。
+    for _ in range(9):
+        client.post("/api/v1/metrics", json={"name": "heavy", "value": 0.0})
+    client.post("/api/v1/metrics", json={"name": "heavy", "value": 100.0})
+    data = client.get("/api/v1/metrics/heavy/stats").json()
+    assert data["kurtosis"] > 3.0
+
+
+def test_get_metric_stats_kurtosis_exact_value_two_point_distribution():
+    # 2 値分布 {-1, 1}: avg=0, σ²=1, σ=1, Σ(x-0)⁴ = 2, m4 = 1, kurtosis = 1。
+    # 2 値分布は kurtosis の理論最小値 1 を取る。
+    for v in [-1.0, 1.0]:
+        client.post("/api/v1/metrics", json={"name": "two", "value": v})
+    data = client.get("/api/v1/metrics/two/stats").json()
+    assert data["kurtosis"] == pytest.approx(1.0, abs=1e-9)
+
+
+def test_get_metric_stats_kurtosis_is_shift_invariant():
+    # kurtosis は中心化モーメントの比なので、入力に定数を加えても変わらない。
+    for v in [1.0, 2.0, 3.0, 4.0, 5.0]:
+        client.post("/api/v1/metrics", json={"name": "a", "value": v})
+    for v in [1.0, 2.0, 3.0, 4.0, 5.0]:
+        client.post("/api/v1/metrics", json={"name": "b", "value": v + 1000.0})
+    ka = client.get("/api/v1/metrics/a/stats").json()["kurtosis"]
+    kb = client.get("/api/v1/metrics/b/stats").json()["kurtosis"]
+    assert ka == pytest.approx(kb, rel=1e-9)
+
+
+def test_get_metric_stats_kurtosis_is_non_negative():
+    # kurtosis は定義上 Σ(x-μ)⁴ >= 0 なので常に非負。
+    for v in [1.0, 2.0, 3.0, 4.0, 5.0]:
+        client.post("/api/v1/metrics", json={"name": "nn", "value": v})
+    data = client.get("/api/v1/metrics/nn/stats").json()
+    assert data["kurtosis"] >= 0
+
+
 def test_get_metrics_by_name_pagination():
     for v in range(5):
         client.post("/api/v1/metrics", json={"name": "load", "value": float(v)})

@@ -544,6 +544,60 @@ describe("GET /api/v1/dashboard/metrics/:name/stats", () => {
     expect(res.status).toBe(200);
     expect(res.body.skewness).toBe(0);
   });
+
+  it("exposes kurtosis field consistent with metrics-worker and api-gateway", async () => {
+    // 2 値分布 {-1, 1}: avg=0, std_dev=1, m4=1, kurtosis=1（理論最小）
+    for (const v of [-1, 1]) {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "two", value: v });
+    }
+    const res = await request(app).get("/api/v1/dashboard/metrics/two/stats");
+    expect(res.status).toBe(200);
+    expect(res.body.kurtosis).toBeCloseTo(1.0, 9);
+  });
+
+  it("returns kurtosis=0 in stats for constant input", async () => {
+    for (let i = 0; i < 5; i++) {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "flat", value: 42 });
+    }
+    const res = await request(app).get("/api/v1/dashboard/metrics/flat/stats");
+    expect(res.status).toBe(200);
+    expect(res.body.kurtosis).toBe(0);
+  });
+
+  it("returns kurtosis > 3 for heavy-tail distribution", async () => {
+    // 9 個の 0 と 1 個の 100 → 平均近傍に集中＋外れ値で heavy tail
+    for (let i = 0; i < 9; i++) {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "heavy", value: 0 });
+    }
+    await request(app)
+      .post("/api/v1/dashboard/metrics")
+      .send({ name: "heavy", value: 100 });
+    const res = await request(app).get("/api/v1/dashboard/metrics/heavy/stats");
+    expect(res.status).toBe(200);
+    expect(res.body.kurtosis).toBeGreaterThan(3);
+  });
+
+  it("kurtosis is shift-invariant in stats", async () => {
+    for (const v of [1, 2, 3, 4, 5]) {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "a", value: v });
+    }
+    for (const v of [1001, 1002, 1003, 1004, 1005]) {
+      await request(app)
+        .post("/api/v1/dashboard/metrics")
+        .send({ name: "b", value: v });
+    }
+    const a = await request(app).get("/api/v1/dashboard/metrics/a/stats");
+    const b = await request(app).get("/api/v1/dashboard/metrics/b/stats");
+    expect(a.body.kurtosis).toBeCloseTo(b.body.kurtosis, 9);
+  });
 });
 
 describe("GET /api/v1/dashboard/metrics/:name/latest", () => {
@@ -970,6 +1024,66 @@ describe("computeStats helper", () => {
       [1, 1, 1, 1, 10].map((v) => ({ name: "l", value: 2 * avgR - v, recorded_at: ts })),
     );
     expect(right.skewness).toBeCloseTo(-left.skewness, 9);
+  });
+
+  it("returns kurtosis=0 for constant input (std_dev=0)", () => {
+    const ts = new Date().toISOString();
+    const stats = computeStats(
+      "flat",
+      [5, 5, 5, 5].map((v) => ({ name: "flat", value: v, recorded_at: ts })),
+    );
+    expect(stats.kurtosis).toBe(0);
+  });
+
+  it("returns kurtosis=0 for single value", () => {
+    const ts = new Date().toISOString();
+    const stats = computeStats("one", [{ name: "one", value: 42, recorded_at: ts }]);
+    expect(stats.kurtosis).toBe(0);
+  });
+
+  it("computes kurtosis exactly for two-point distribution {-1, 1}", () => {
+    // avg=0, σ²=1, σ=1, Σ(x-0)⁴=2, m4=1, kurtosis=1
+    const ts = new Date().toISOString();
+    const stats = computeStats(
+      "two",
+      [-1, 1].map((v) => ({ name: "two", value: v, recorded_at: ts })),
+    );
+    expect(stats.kurtosis).toBeCloseTo(1.0, 9);
+  });
+
+  it("returns kurtosis > 3 for heavy-tail distribution", () => {
+    const ts = new Date().toISOString();
+    const stats = computeStats(
+      "heavy",
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 100].map((v) => ({
+        name: "heavy",
+        value: v,
+        recorded_at: ts,
+      })),
+    );
+    expect(stats.kurtosis).toBeGreaterThan(3);
+  });
+
+  it("kurtosis is shift-invariant", () => {
+    const ts = new Date().toISOString();
+    const a = computeStats(
+      "a",
+      [1, 2, 3, 4, 5].map((v) => ({ name: "a", value: v, recorded_at: ts })),
+    );
+    const b = computeStats(
+      "b",
+      [1, 2, 3, 4, 5].map((v) => ({ name: "b", value: v + 1000, recorded_at: ts })),
+    );
+    expect(a.kurtosis).toBeCloseTo(b.kurtosis, 9);
+  });
+
+  it("returns non-negative kurtosis", () => {
+    const ts = new Date().toISOString();
+    const stats = computeStats(
+      "nn",
+      [1, 2, 3, 4, 5].map((v) => ({ name: "nn", value: v, recorded_at: ts })),
+    );
+    expect(stats.kurtosis).toBeGreaterThanOrEqual(0);
   });
 });
 

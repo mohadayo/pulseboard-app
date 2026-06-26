@@ -802,3 +802,89 @@ func TestAggregateResponseHasNonFiniteDetectsCV(t *testing.T) {
 		t.Error("expected hasNonFinite to detect Inf cv")
 	}
 }
+
+// TestComputeAggregateKurtosis は population kurtosis が以下の規約で計算されることを検証する:
+// - 定数入力 (σ=0): 0
+// - 単一要素: 0
+// - heavy-tail 分布: > 3
+// - 一様幅の対称分布: 3 未満（platykurtic）
+func TestComputeAggregateKurtosis(t *testing.T) {
+	// 定数入力 (σ=0): 定義不能 → 0
+	if result := computeAggregate([]float64{5, 5, 5, 5}); result.Kurtosis != 0 {
+		t.Errorf("constant input: expected kurtosis 0 (σ=0 degenerate), got %f", result.Kurtosis)
+	}
+
+	// 単一要素: σ=0 → 0
+	if result := computeAggregate([]float64{42}); result.Kurtosis != 0 {
+		t.Errorf("single element: expected kurtosis 0, got %f", result.Kurtosis)
+	}
+
+	// heavy-tail 分布: 平均近傍に集中しつつ大きな外れ値が出るケース → kurtosis > 3
+	heavy := computeAggregate([]float64{0, 0, 0, 0, 0, 0, 0, 0, 0, 100})
+	if heavy.Kurtosis <= 3 {
+		t.Errorf("heavy-tail distribution: expected kurtosis > 3, got %f", heavy.Kurtosis)
+	}
+
+	// kurtosis は常に非負（定義上 Σ(x-μ)⁴ >= 0）。
+	if heavy.Kurtosis < 0 {
+		t.Errorf("kurtosis must be non-negative, got %f", heavy.Kurtosis)
+	}
+}
+
+// TestComputeAggregateKurtosisExactValue は既知入力での kurtosis 値を厳密に検証する。
+// 入力 [-1, 1] → avg=0, σ²=1, σ=1
+//
+//	Σ(x-0)⁴ = 1 + 1 = 2
+//	m4 = 2 / 2 = 1
+//	kurtosis = 1 / 1 = 1
+//
+// 2 値分布は kurtosis = 1（最小値）。
+func TestComputeAggregateKurtosisExactValue(t *testing.T) {
+	result := computeAggregate([]float64{-1, 1})
+	if !approxEqual(result.Kurtosis, 1.0, 1e-9) {
+		t.Errorf("expected kurtosis 1.0, got %f", result.Kurtosis)
+	}
+}
+
+// TestComputeAggregateKurtosisInvariantUnderShift はシフト不変性を検証する。
+// kurtosis は中心化されたモーメントの比なので、入力に定数を加えても変わらない。
+func TestComputeAggregateKurtosisInvariantUnderShift(t *testing.T) {
+	a := computeAggregate([]float64{1, 2, 3, 4, 5})
+	b := computeAggregate([]float64{101, 102, 103, 104, 105})
+	if !approxEqual(a.Kurtosis, b.Kurtosis, 1e-9) {
+		t.Errorf("kurtosis must be shift-invariant: a=%f b=%f", a.Kurtosis, b.Kurtosis)
+	}
+}
+
+func TestAggregateHandlerIncludesKurtosisField(t *testing.T) {
+	body, _ := json.Marshal(AggregateRequest{Values: []float64{1, 2, 3, 4, 5}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/aggregate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	aggregateHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("failed to decode raw: %v", err)
+	}
+	if _, ok := raw["kurtosis"]; !ok {
+		t.Errorf("response JSON missing key \"kurtosis\"")
+	}
+}
+
+// hasNonFinite() が Kurtosis の NaN/Inf も検出することを保証する。
+func TestAggregateResponseHasNonFiniteDetectsKurtosis(t *testing.T) {
+	resp := AggregateResponse{Kurtosis: math.NaN()}
+	if !resp.hasNonFinite() {
+		t.Error("expected hasNonFinite to detect NaN kurtosis")
+	}
+	resp = AggregateResponse{Kurtosis: math.Inf(1)}
+	if !resp.hasNonFinite() {
+		t.Error("expected hasNonFinite to detect Inf kurtosis")
+	}
+}
