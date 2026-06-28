@@ -51,6 +51,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: services/dashboard-bff/package-lock.json
       - run: npm ci
+      - run: npx tsc --noEmit
       - run: npm test
 
   docker-build:
