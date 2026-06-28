@@ -992,3 +992,75 @@ def test_count_metrics_does_not_collide_with_path_param():
     # 当然 404 になる（事故防止のための明示テスト）。
     resp_path = client.get("/api/v1/metrics/count_no_such_metric")
     assert resp_path.status_code == 404
+
+
+# --- DELETE /api/v1/metrics (全メトリクス一括削除) ---
+
+def test_delete_all_metrics_empty_store_returns_zero():
+    resp = client.delete("/api/v1/metrics")
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": 0}
+
+
+def test_delete_all_metrics_removes_all():
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 1.0})
+    client.post("/api/v1/metrics", json={"name": "mem", "value": 2.0})
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 3.0})
+
+    resp = client.delete("/api/v1/metrics")
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": 3}
+
+    assert client.get("/api/v1/metrics").json()["total"] == 0
+    assert client.get("/api/v1/metrics/names").json()["count"] == 0
+
+
+def test_delete_all_metrics_allows_fresh_posts_from_seq_zero():
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 1.0})
+    client.delete("/api/v1/metrics")
+
+    resp = client.post("/api/v1/metrics", json={"name": "cpu", "value": 2.0})
+    assert resp.status_code == 201
+    assert resp.json()["id"] == "cpu-0"
+
+
+def test_delete_all_metrics_does_not_shadow_by_name_delete():
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 1.0})
+    client.post("/api/v1/metrics", json={"name": "mem", "value": 2.0})
+
+    resp_by_name = client.delete("/api/v1/metrics/cpu")
+    assert resp_by_name.status_code == 200
+    assert resp_by_name.json()["deleted"] == 1
+
+    # mem はまだ残っている
+    assert client.get("/api/v1/metrics/mem").json()["count"] == 1
+
+    resp_all = client.delete("/api/v1/metrics")
+    assert resp_all.status_code == 200
+    assert resp_all.json()["deleted"] == 1
+
+    # 削除後は 0 件
+    assert client.get("/api/v1/metrics").json()["total"] == 0
+
+
+def test_delete_all_metrics_idempotent():
+    client.post("/api/v1/metrics", json={"name": "x", "value": 1.0})
+
+    resp1 = client.delete("/api/v1/metrics")
+    assert resp1.status_code == 200
+    assert resp1.json()["deleted"] == 1
+
+    resp2 = client.delete("/api/v1/metrics")
+    assert resp2.status_code == 200
+    assert resp2.json()["deleted"] == 0
+
+
+def test_delete_all_metrics_count_reflects_multiple_names():
+    for v in range(3):
+        client.post("/api/v1/metrics", json={"name": "a", "value": float(v)})
+    for v in range(5):
+        client.post("/api/v1/metrics", json={"name": "b", "value": float(v)})
+
+    resp = client.delete("/api/v1/metrics")
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": 8}
