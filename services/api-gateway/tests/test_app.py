@@ -248,7 +248,7 @@ def test_get_metrics_by_name_not_found():
 
 
 def test_get_metrics_by_name_does_not_shadow_latest():
-    """`{metric_name}` ルートが `{metric_name}/latest` を奪わないことを確認。"""
+    ""`{metric_name}` ルートが `{metric_name}/latest` を奪わないことを確認。"""
     client.post("/api/v1/metrics", json={"name": "disk", "value": 1})
     client.post("/api/v1/metrics", json={"name": "disk", "value": 2})
 
@@ -437,7 +437,7 @@ def test_get_metric_stats_not_found():
 
 
 def test_get_metric_stats_does_not_shadow_other_routes():
-    """`{metric_name}/stats` ルートが `{metric_name}` / `{metric_name}/latest` と衝突しないことを確認。"""
+    ""`{metric_name}/stats` ルートが `{metric_name}` / `{metric_name}/latest` と衝突しないことを確認。"""
     client.post("/api/v1/metrics", json={"name": "disk", "value": 1})
     client.post("/api/v1/metrics", json={"name": "disk", "value": 2})
 
@@ -992,3 +992,77 @@ def test_count_metrics_does_not_collide_with_path_param():
     # 当然 404 になる（事故防止のための明示テスト）。
     resp_path = client.get("/api/v1/metrics/count_no_such_metric")
     assert resp_path.status_code == 404
+
+
+# --- DELETE /api/v1/metrics (全メトリクス一括削除) ---
+
+def test_delete_all_metrics_empty_store_returns_zero():
+    resp = client.delete("/api/v1/metrics")
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": 0}
+
+
+def test_delete_all_metrics_removes_all():
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 1.0})
+    client.post("/api/v1/metrics", json={"name": "mem", "value": 2.0})
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 3.0})
+
+    resp = client.delete("/api/v1/metrics")
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": 3}
+
+    assert client.get("/api/v1/metrics").json()["total"] == 0
+    assert client.get("/api/v1/metrics/names").json()["count"] == 0
+
+
+def test_delete_all_metrics_allows_fresh_posts_from_seq_zero():
+    # 一括削除後の新規 POST では seq が 0 から再採番される。
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 1.0})
+    client.delete("/api/v1/metrics")
+
+    resp = client.post("/api/v1/metrics", json={"name": "cpu", "value": 2.0})
+    assert resp.status_code == 201
+    assert resp.json()["id"] == "cpu-0"
+
+
+def test_delete_all_metrics_does_not_shadow_by_name_delete():
+    # DELETE /api/v1/metrics は DELETE /api/v1/metrics/{name} と衝突しない。
+    client.post("/api/v1/metrics", json={"name": "cpu", "value": 1.0})
+    client.post("/api/v1/metrics", json={"name": "mem", "value": 2.0})
+
+    resp_by_name = client.delete("/api/v1/metrics/cpu")
+    assert resp_by_name.status_code == 200
+    assert resp_by_name.json()["deleted"] == 1
+
+    assert client.get("/api/v1/metrics/mem").json()["count"] == 1
+
+    resp_all = client.delete("/api/v1/metrics")
+    assert resp_all.status_code == 200
+    assert resp_all.json()["deleted"] == 1
+
+    assert client.get("/api/v1/metrics").json()["total"] == 0
+
+
+def test_delete_all_metrics_idempotent():
+    # 2 回連続で呼んでも 500 にならない。2 回目は 0 件削除。
+    client.post("/api/v1/metrics", json={"name": "x", "value": 1.0})
+
+    resp1 = client.delete("/api/v1/metrics")
+    assert resp1.status_code == 200
+    assert resp1.json()["deleted"] == 1
+
+    resp2 = client.delete("/api/v1/metrics")
+    assert resp2.status_code == 200
+    assert resp2.json()["deleted"] == 0
+
+
+def test_delete_all_metrics_count_reflects_multiple_names():
+    # 複数名のメトリクスが全て削除対象になる。
+    for v in range(3):
+        client.post("/api/v1/metrics", json={"name": "a", "value": float(v)})
+    for v in range(5):
+        client.post("/api/v1/metrics", json={"name": "b", "value": float(v)})
+
+    resp = client.delete("/api/v1/metrics")
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": 8}

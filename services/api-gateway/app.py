@@ -265,7 +265,7 @@ def _apply_time_filter(
     since_dt: Optional[datetime],
     until_dt: Optional[datetime],
 ) -> list[dict]:
-    """`recorded_at` で `since`/`until` の範囲に合致するレコードに絞り込む。
+    ""`recorded_at` で `since`/`until` の範囲に合致するレコードに絞り込む。
 
     `recorded_at` は POST 時に UTC ISO で書き込んでいるため通常パース失敗は
     発生しないが、壊れた値が混入した場合は除外扱いとして安全側に倒す。
@@ -350,30 +350,28 @@ def get_metric_stats(
     count = len(values)
     sorted_values = sorted(values)
     avg = total / count
-    # 母標準偏差 (population std dev) を求める。`metrics-worker` の
-    # `/api/v1/aggregate` と定義を揃え、ダッシュボードでどちらのサービス由来でも
-    # 同じ「ばらつき指標」として扱えるようにする。count=1 のときは差分が 0 で
-    # 分散 0、std_dev 0 になる（ゼロ除算ではない）。
+    # 母集団分散（除数 N、Bessel 補正なし）と母標準偏差をペアで露出する。
+    # `metrics-worker` の `/api/v1/aggregate` と式を統一しており、下流の
+    # `dashboard-bff` で「複数 worker の集計結果を合成分散の閉形式で
+    # 集約する」ためのフィールドを欠落させない。`std_dev = sqrt(variance)`
+    # の関係を保つ（`count == 1` は両者とも 0.0）。
     variance = sum((v - avg) ** 2 for v in values) / count
     std_dev = math.sqrt(variance)
     # 変動係数 (Coefficient of Variation): std_dev / |avg|。
-    # `metrics-worker` の `/api/v1/aggregate` と定義を統一する。
+    # `api-gateway` および `metrics-worker` と定義を統一する。
     # avg == 0 の場合は定義不能 (0/0) なので 0.0 を返す。
     cv = std_dev / abs(avg) if avg != 0 else 0.0
     # 母集団歪度 (population skewness): (1/n) Σ((xᵢ - μ)³) / σ³。
-    # `metrics-worker` の `/api/v1/aggregate` と定義を統一し、Bessel 補正なしの
-    # 母集団分散をベースに算出する。σ = 0（定数入力 / 単一観測）の場合は定義不能
-    # (0/0) なので 0.0 を返す（`cv` の avg=0 と同じ規約）。
+    # `metrics-worker` の `/api/v1/aggregate` と定義を統一する。
+    # σ = 0（定数入力 / 単一観測）の場合は定義不能 (0/0) なので 0 を返す。
     if std_dev > 0:
         m3 = sum((v - avg) ** 3 for v in values) / count
         skewness = m3 / (std_dev ** 3)
     else:
         skewness = 0.0
     # 母集団尖度 (population kurtosis): (1/n) Σ((xᵢ - μ)⁴) / σ⁴。
-    # `metrics-worker` の `/api/v1/aggregate` と式を統一し、Bessel 補正なしの
-    # 母集団分散をベースに算出する。正規分布の kurtosis は 3.0、heavy-tail は > 3。
-    # σ = 0（定数入力 / 単一観測）の場合は定義不能 (0/0) なので 0.0 を返す
-    # （`skewness` の σ=0 と同じ規約）。
+    # `metrics-worker` の `/api/v1/aggregate` と定義を統一する。
+    # σ = 0（定数入力 / 単一観測）の場合は定義不能 (0/0) なので 0 を返す。
     if std_dev > 0:
         m4 = sum((v - avg) ** 4 for v in values) / count
         kurtosis = m4 / (std_dev ** 4)
@@ -386,19 +384,10 @@ def get_metric_stats(
         "max": sorted_values[-1],
         "sum": total,
         "avg": avg,
-        # 母集団分散（除数 N、Bessel 補正なし）と母標準偏差をペアで露出する。
-        # `metrics-worker` の `/api/v1/aggregate` と式を統一しており、下流の
-        # `dashboard-bff` で「複数 worker の集計結果を合成分散の閉形式で
-        # 集約する」ためのフィールドを欠落させない。`std_dev = sqrt(variance)`
-        # の関係を保つ（`count == 1` は両者とも 0.0）。
         "variance": variance,
         "std_dev": std_dev,
         "cv": cv,
-        # 母集団歪度。`metrics-worker` の `/api/v1/aggregate` および
-        # `dashboard-bff` の `computeStats` と式・退化ケース処理を統一する。
         "skewness": skewness,
-        # 母集団尖度。`metrics-worker` の `/api/v1/aggregate` および
-        # `dashboard-bff` の `computeStats` と式・退化ケース処理を統一する。
         "kurtosis": kurtosis,
         "p50": _percentile(sorted_values, 50),
         "p95": _percentile(sorted_values, 95),
@@ -467,7 +456,7 @@ def count_metrics(
     件数集計まで踏み込むため UI の「期間内バッジ」に直接使える。
 
     レジストレーション位置: `/{metric_name}` ルートより前に置く必要がある
-    （FastAPI は登録順マッチで、後置だと `metric_name=\"count\"` として捕捉される）。
+    （FastAPI は登録順マッチで、後置だと `metric_name="count"` として捕捉される）。
     """
     since_dt, until_dt = _parse_since_until(since, until)
 
@@ -542,6 +531,23 @@ def get_metrics_by_name(
         "limit": limit,
         "offset": offset,
     }
+
+
+@app.delete("/api/v1/metrics")
+def delete_all_metrics():
+    """保持中の全メトリクスを一括削除する。
+
+    dashboard-bff の `DELETE /api/v1/dashboard/metrics` と対称な操作。
+    store と seq を同一ロック内でクリアし、削除後の新規 POST で ID が
+    0 から再採番されることを保証する。
+    レスポンス: `{"deleted": N}` — 削除件数（空の場合は 0）。
+    """
+    with _store_lock:
+        total = sum(len(v) for v in metrics_store.values())
+        metrics_store.clear()
+        metrics_seq.clear()
+    logger.info("Deleted all %d metrics", total)
+    return {"deleted": total}
 
 
 @app.delete("/api/v1/metrics/{metric_name}")
