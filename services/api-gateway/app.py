@@ -265,7 +265,7 @@ def _apply_time_filter(
     since_dt: Optional[datetime],
     until_dt: Optional[datetime],
 ) -> list[dict]:
-    ""`recorded_at` で `since`/`until` の範囲に合致するレコードに絞り込む。
+    """`recorded_at` で `since`/`until` の範囲に合致するレコードに絞り込む。
 
     `recorded_at` は POST 時に UTC ISO で書き込んでいるため通常パース失敗は
     発生しないが、壊れた値が混入した場合は除外扱いとして安全側に倒す。
@@ -535,13 +535,6 @@ def get_metrics_by_name(
 
 @app.delete("/api/v1/metrics")
 def delete_all_metrics():
-    """保持中の全メトリクスを一括削除する。
-
-    dashboard-bff の `DELETE /api/v1/dashboard/metrics` と対称な操作。
-    store と seq を同一ロック内でクリアし、削除後の新規 POST で ID が
-    0 から再採番されることを保証する。
-    レスポンス: `{"deleted": N}` — 削除件数（空の場合は 0）。
-    """
     with _store_lock:
         total = sum(len(v) for v in metrics_store.values())
         metrics_store.clear()
