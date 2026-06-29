@@ -11,10 +11,32 @@ import (
 	"os/signal"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
+
+// logLevel は metrics-worker 内で使う最小限のログレベル。
+// Go 標準 `log` パッケージはレベル概念を持たないため、ヘルスチェック等の
+// 高頻度・低価値ログを抑制するために自前で持つ。`api-gateway` (Python) の
+// `LOG_LEVEL` env と運用を揃え、DEBUG 指定時のみ logDebug が出力する。
+type logLevel int
+
+const (
+	logLevelDebug logLevel = iota
+	logLevelInfo
+)
+
+// parseLogLevel は環境変数 LOG_LEVEL の文字列をログレベルへ変換する。
+// `"DEBUG"`（大文字小文字無視）のみ logLevelDebug、それ以外（空・INFO・不正値含む）は
+// logLevelInfo を返す。将来 WARN / ERROR を追加してもこの関数だけ拡張すれば良い。
+func parseLogLevel(s string) logLevel {
+	if strings.EqualFold(strings.TrimSpace(s), "DEBUG") {
+		return logLevelDebug
+	}
+	return logLevelInfo
+}
 
 type AggregateRequest struct {
 	Values []float64 `json:"values"`
@@ -82,6 +104,10 @@ var (
 	// /api/v1/aggregate の values 配列の要素数上限。
 	// 0 以下なら無制限。
 	maxAggregateValues = 10000
+
+	// 現在のログレベル。プロセス起動時に LOG_LEVEL から 1 回だけ読む。
+	// テストからは直接書き換えて挙動を切り替えられる。
+	currentLogLevel = logLevelInfo
 )
 
 func init() {
@@ -90,6 +116,18 @@ func init() {
 	}
 	if v := envInt("MAX_AGGREGATE_VALUES", -1); v >= 0 {
 		maxAggregateValues = v
+	}
+	currentLogLevel = parseLogLevel(os.Getenv("LOG_LEVEL"))
+}
+
+// logDebug は currentLogLevel が DEBUG 以下の場合のみログ出力する。
+// K8s probe / ロードバランサヘルスチェックなど高頻度・低価値イベントを
+// 既定 (INFO) では抑制し、`LOG_LEVEL=DEBUG` 時のみ可視化する。
+// 既存 `logger.Printf(...)` を直接呼び出している箇所は INFO 相当として
+// 影響を受けない（後方互換）。
+func logDebug(format string, args ...interface{}) {
+	if currentLogLevel <= logLevelDebug {
+		logger.Printf(format, args...)
 	}
 }
 
@@ -112,7 +150,9 @@ func envSeconds(key string, fallback time.Duration) time.Duration {
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	logger.Println("Health check requested")
+	// /health は K8s probe / ロードバランサから高頻度に呼ばれるため、
+	// DEBUG レベルでのみ出力して既定運用ではノイズに埋もれないようにする。
+	logDebug("Health check requested")
 	resp := HealthResponse{
 		Status:    "ok",
 		Service:   "metrics-worker",
