@@ -611,7 +611,7 @@ func TestComputeAggregateVarianceConstantInput(t *testing.T) {
 	}
 }
 
-// JSON レスポンスに variance キーが含まれることを確認する（消費側 API の保証）。
+// JSON レスポンスに variance キーが含まれることを確認する(消費側 API の保証)。
 func TestAggregateHandlerIncludesVarianceField(t *testing.T) {
 	body, _ := json.Marshal(AggregateRequest{Values: []float64{1, 2, 3, 4, 5}})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/aggregate", bytes.NewReader(body))
@@ -886,5 +886,132 @@ func TestAggregateResponseHasNonFiniteDetectsKurtosis(t *testing.T) {
 	resp = AggregateResponse{Kurtosis: math.Inf(1)}
 	if !resp.hasNonFinite() {
 		t.Error("expected hasNonFinite to detect Inf kurtosis")
+	}
+}
+
+// TestParseLogLevel_AcceptsDebug は "DEBUG" 文字列が logLevelDebug に
+// 変換されることを確認する。
+func TestParseLogLevel_AcceptsDebug(t *testing.T) {
+	if got := parseLogLevel("DEBUG"); got != logLevelDebug {
+		t.Errorf("parseLogLevel(\"DEBUG\") = %v, want logLevelDebug", got)
+	}
+}
+
+// TestParseLogLevel_IsCaseInsensitive は LOG_LEVEL の値解釈が
+// 大文字小文字非依存であることを確認する。`debug` / `Debug` 等の
+// 表記揺れで「production で suppress するつもりが output されてしまう」
+// 事故を防ぐ。
+func TestParseLogLevel_IsCaseInsensitive(t *testing.T) {
+	for _, s := range []string{"debug", "Debug", "dEbUg", "  DEBUG  "} {
+		if got := parseLogLevel(s); got != logLevelDebug {
+			t.Errorf("parseLogLevel(%q) = %v, want logLevelDebug", s, got)
+		}
+	}
+}
+
+// TestParseLogLevel_DefaultsToInfo は未対応・未指定の値が logLevelInfo に
+// フォールバックすることを確認する（空文字列 / `INFO` / 不正値 / `WARN` 等）。
+func TestParseLogLevel_DefaultsToInfo(t *testing.T) {
+	for _, s := range []string{"", "INFO", "info", "WARN", "WARNING", "ERROR", "unknown", "trace"} {
+		if got := parseLogLevel(s); got != logLevelInfo {
+			t.Errorf("parseLogLevel(%q) = %v, want logLevelInfo", s, got)
+		}
+	}
+}
+
+// withCurrentLogLevel は currentLogLevel を一時的に上書きし、テスト終了時に
+// 元の値に戻すヘルパー。テスト間の独立性を保つ。
+func withCurrentLogLevel(t *testing.T, level logLevel) {
+	t.Helper()
+	prev := currentLogLevel
+	currentLogLevel = level
+	t.Cleanup(func() { currentLogLevel = prev })
+}
+
+// captureLogger はパッケージレベル `logger` の出力先を一時的に bytes.Buffer に
+// 差し替え、テスト終了時に元の os.Stdout 出力に戻す。logDebug の出力可否を
+// 直接観測するために使う。
+func captureLogger(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := logger.Writer()
+	logger.SetOutput(&buf)
+	t.Cleanup(func() { logger.SetOutput(prev) })
+	return &buf
+}
+
+// TestLogDebug_SuppressedAtInfoLevel は LOG_LEVEL=INFO（既定）の状態で
+// logDebug 呼び出しが何も出力しないことを確認する。これが本 issue の中核。
+func TestLogDebug_SuppressedAtInfoLevel(t *testing.T) {
+	withCurrentLogLevel(t, logLevelInfo)
+	buf := captureLogger(t)
+
+	logDebug("Health check requested")
+
+	if got := buf.String(); got != "" {
+		t.Errorf("logDebug should not emit at INFO level, but got: %q", got)
+	}
+}
+
+// TestLogDebug_EmittedAtDebugLevel は LOG_LEVEL=DEBUG のとき logDebug が
+// 出力する（= デバッグ時には残せる）ことを確認する。
+func TestLogDebug_EmittedAtDebugLevel(t *testing.T) {
+	withCurrentLogLevel(t, logLevelDebug)
+	buf := captureLogger(t)
+
+	logDebug("Health check requested")
+
+	if got := buf.String(); got == "" {
+		t.Errorf("logDebug should emit at DEBUG level, but got empty output")
+	}
+}
+
+// TestLogDebug_FormatsArguments は logDebug が Printf 形式の
+// フォーマット引数を解釈することを確認する。
+func TestLogDebug_FormatsArguments(t *testing.T) {
+	withCurrentLogLevel(t, logLevelDebug)
+	buf := captureLogger(t)
+
+	logDebug("worker=%s count=%d", "metrics", 42)
+
+	if got := buf.String(); !bytes.Contains([]byte(got), []byte("worker=metrics count=42")) {
+		t.Errorf("logDebug should format args, but got: %q", got)
+	}
+}
+
+// TestHealthHandler_DoesNotLogAtInfoLevel は本 issue の挙動上の受け入れ条件。
+// INFO レベル（既定）で /health を叩いてもログが空であることを観測する。
+func TestHealthHandler_DoesNotLogAtInfoLevel(t *testing.T) {
+	withCurrentLogLevel(t, logLevelInfo)
+	buf := captureLogger(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	healthHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := buf.String(); got != "" {
+		t.Errorf("/health should not log at INFO level, but got: %q", got)
+	}
+}
+
+// TestHealthHandler_LogsAtDebugLevel は LOG_LEVEL=DEBUG で /health を叩くと
+// "Health check requested" が記録されることを確認する。デバッグ用途で
+// ヘルスチェックが届いているか確認したいケースの後方互換を保証する。
+func TestHealthHandler_LogsAtDebugLevel(t *testing.T) {
+	withCurrentLogLevel(t, logLevelDebug)
+	buf := captureLogger(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	healthHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := buf.String(); !bytes.Contains([]byte(got), []byte("Health check requested")) {
+		t.Errorf("/health should log at DEBUG level, but got: %q", got)
 	}
 }

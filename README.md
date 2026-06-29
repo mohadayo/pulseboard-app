@@ -152,6 +152,13 @@ The response includes `count`, `sum`, `avg`, `min`, `max`, `range` (= max − mi
   （Slowloris 等の遅延接続攻撃対策）。
 - いずれの上限も値を `0` 以下に設定すると無効化できる（テスト用途）。
 
+**ロギング:**
+
+- `LOG_LEVEL`（既定 `INFO`）で出力レベルを切り替えられる。`api-gateway` の同名 env と運用を揃えている。
+- `LOG_LEVEL=DEBUG` を指定すると、ヘルスチェック（`/health`）受信時のアクセスログ「Health check requested」が出力される。デバッグ用途。
+- 既定（`INFO` / 未設定 / 不正値）では `/health` のアクセスログは抑止される。K8s `livenessProbe` / `readinessProbe` / ロードバランサ probe による高頻度呼び出しでログを汚染しないため。
+- 集計ジョブの完了ログ（`Aggregation job #N completed: ...`）等の INFO レベルログは引き続き常時出力される。
+
 ### Dashboard BFF (`:8002`)
 
 | Method | Endpoint | Description |
