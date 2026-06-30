@@ -1313,11 +1313,21 @@ app.delete(
 
 // express.json の limit 超過は SyntaxError ではなく entity.too.large になる。
 // 専用のエラーハンドラを置いて 413 を返す（既存の 500 ハンドラの前段）。
+// 同様に、構文不正な JSON ボディは body-parser が SyntaxError
+// (`type === 'entity.parse.failed'`) を投げる。これを 500 ハンドラまで
+// 落とすと "Internal server error" として 5xx を返してしまい、
+// SRE の 5xx アラートが誤発火し原因（クライアント側の不正リクエスト）も
+// 分からない。413 と並列で 400 ハンドラを用意し、JSON で明示的に返す。
 app.use(
-  (err: Error & { type?: string; status?: number }, _req: Request, res: Response, next: NextFunction) => {
+  (err: Error & { type?: string; status?: number }, req: Request, res: Response, next: NextFunction) => {
     if (err && (err.type === "entity.too.large" || err.status === 413)) {
       log("WARN", `Request body too large (limit=${MAX_REQUEST_BODY})`);
       res.status(413).json({ error: "request body too large" });
+      return;
+    }
+    if (err instanceof SyntaxError && err.type === "entity.parse.failed") {
+      log("WARN", `Malformed JSON body (path=${req.path})`);
+      res.status(400).json({ error: "invalid JSON body" });
       return;
     }
     next(err);
