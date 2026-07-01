@@ -185,6 +185,36 @@ def create_metric(payload: MetricPayload):
     return MetricResponse(**record)
 
 
+# メトリクス名の最大長。POST 時の `MetricPayload.name` の Field(max_length=128) と一致させる。
+# `_normalize_q_param` の長さ検査でも参照する。
+MAX_METRIC_NAME_LENGTH = 128
+
+
+def _normalize_q_param(raw: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """`q` クエリパラメータを正規化する。
+
+    戻り値は (正規化後の値, エラーメッセージ)。
+    - None → (None, None) : 未指定（フィルタしない）
+    - 空文字 → (None, None) : 空指定は「未指定」扱い（`analytics-api` `_normalize_q_param` は
+      trim 後空を 400 にするが、こちらは `?q=` を「指定なし」と等価に扱う先行実装との整合を優先する）
+    - trim 後が空 (空白のみ) → (None, "q must not be blank") : 400 を返す対象
+    - 上限超過 → (None, "q is too long ...") : 400 を返す対象
+    - 正常 → (trimmed, None)
+
+    ダッシュボードのフィルタドロップダウンで大量のメトリクス名を絞り込む用途を想定した
+    サーバ側の部分一致（ケース無視）検索のためのパラメータ正規化。呼び元は
+    エラーメッセージが `None` でない場合に 400 HTTPException を投げる。
+    """
+    if raw is None or raw == "":
+        return None, None
+    stripped = raw.strip()
+    if not stripped:
+        return None, "q must not be blank"
+    if len(stripped) > MAX_METRIC_NAME_LENGTH:
+        return None, f"q must be at most {MAX_METRIC_NAME_LENGTH} characters"
+    return stripped, None
+
+
 def _parse_iso_datetime(value: str, field: str) -> datetime:
     """ISO 8601 形式の文字列を `datetime` に変換する。
 
@@ -401,7 +431,15 @@ def get_metric_stats(
 
 
 @app.get("/api/v1/metrics/names")
-def list_metric_names():
+def list_metric_names(
+    q: Optional[str] = Query(
+        default=None,
+        description=(
+            "メトリクス名に対する大文字小文字無視の部分一致検索。"
+            "空文字 (`?q=`) は指定なしと同じ。空白のみ / 128 文字超は 400。"
+        ),
+    ),
+):
     """保持中のメトリクス名一覧と件数・最終記録時刻を返す。
 
     `GET /api/v1/metrics?limit=最大` 経由でクライアント側集計するパターンを
@@ -412,9 +450,19 @@ def list_metric_names():
     - ``latest_recorded_at``: 末尾レコードの ``recorded_at``。POST 時点で
       ロック内 append しているため、エントリの末尾が常に最新。
 
+    `?q=` を指定すると、大文字小文字無視の部分一致で name を絞り込む。
+    ダッシュボードのフィルタドロップダウンで大量のメトリクス名を絞り込む用途
+    （`db.*` の候補だけ populate したい等）を想定。前方一致ではなく substring
+    一致に統一しており、`analytics-api` (pulseboard) の `_normalize_q_param`
+    と同じ挙動を共有する。
+
     返却順は ``name`` 昇順。経路衝突回避のため、``/{metric_name}`` 系の
     登録より前に定義する必要がある（FastAPI は登録順で評価する）。
     """
+    normalized_q, q_error = _normalize_q_param(q)
+    if q_error is not None:
+        raise HTTPException(status_code=400, detail=q_error)
+
     with _store_lock:
         # ロック内ではキー一覧と各エントリの (件数, 末尾の recorded_at) を
         # スナップショットするのみ。リスト本体は複製しない（O(N) 回避）。
@@ -424,12 +472,20 @@ def list_metric_names():
                 snapshot.append((name, len(entries), entries[-1].get("recorded_at")))
             else:
                 snapshot.append((name, 0, None))
+
+    if normalized_q is not None:
+        needle = normalized_q.lower()
+        snapshot = [t for t in snapshot if needle in t[0].lower()]
+
     snapshot.sort(key=lambda t: t[0])
     names = [
         {"name": n, "count": c, "latest_recorded_at": ts}
         for (n, c, ts) in snapshot
     ]
-    logger.info("Listed %d distinct metric name(s)", len(names))
+    logger.info(
+        "Listed %d distinct metric name(s) (q=%s)",
+        len(names), normalized_q,
+    )
     return {"names": names, "count": len(names)}
 
 
