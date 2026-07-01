@@ -902,6 +902,105 @@ def test_list_metric_names_excludes_deleted_metrics():
     assert [n["name"] for n in resp.json()["names"]] == ["keep"]
 
 
+# ---- /api/v1/metrics/names ?q= (部分一致) ----
+
+def test_list_metric_names_q_filters_substring_match():
+    # `q` に部分一致する name のみが返る（sort 順・count・latest_recorded_at は保持）
+    client.post("/api/v1/metrics", json={"name": "db.reads", "value": 1.0})
+    client.post("/api/v1/metrics", json={"name": "db.writes", "value": 2.0})
+    client.post("/api/v1/metrics", json={"name": "cpu.usage", "value": 3.0})
+    resp = client.get("/api/v1/metrics/names?q=db")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 2
+    assert [n["name"] for n in data["names"]] == ["db.reads", "db.writes"]
+
+
+def test_list_metric_names_q_matches_substring_not_only_prefix():
+    # `q` は前方一致ではなく部分一致。`.usage` で終わる name も拾う。
+    client.post("/api/v1/metrics", json={"name": "cpu.usage", "value": 1.0})
+    client.post("/api/v1/metrics", json={"name": "mem.usage", "value": 2.0})
+    client.post("/api/v1/metrics", json={"name": "disk.read", "value": 3.0})
+    resp = client.get("/api/v1/metrics/names?q=usage")
+    assert resp.status_code == 200
+    assert [n["name"] for n in resp.json()["names"]] == ["cpu.usage", "mem.usage"]
+
+
+def test_list_metric_names_q_is_case_insensitive():
+    # `q` は大文字小文字無視。`DB` で `db.reads` と `Db.writes` の両方がヒット。
+    client.post("/api/v1/metrics", json={"name": "db.reads", "value": 1.0})
+    client.post("/api/v1/metrics", json={"name": "Db.writes", "value": 2.0})
+    client.post("/api/v1/metrics", json={"name": "cpu.usage", "value": 3.0})
+    resp = client.get("/api/v1/metrics/names?q=DB")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 2
+    assert sorted(n["name"] for n in data["names"]) == ["Db.writes", "db.reads"]
+
+
+def test_list_metric_names_q_no_match_returns_empty():
+    # ヒット 0 件の場合は空配列と count=0 を返す（404 ではない）
+    client.post("/api/v1/metrics", json={"name": "cpu.usage", "value": 1.0})
+    resp = client.get("/api/v1/metrics/names?q=nonexistent")
+    assert resp.status_code == 200
+    assert resp.json() == {"names": [], "count": 0}
+
+
+def test_list_metric_names_q_empty_string_returns_all():
+    # `?q=` (空文字) は指定なしと同じ扱い。全件返す。
+    client.post("/api/v1/metrics", json={"name": "cpu.usage", "value": 1.0})
+    client.post("/api/v1/metrics", json={"name": "mem.usage", "value": 2.0})
+    resp = client.get("/api/v1/metrics/names?q=")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 2
+    assert [n["name"] for n in data["names"]] == ["cpu.usage", "mem.usage"]
+
+
+def test_list_metric_names_q_whitespace_only_returns_400():
+    # 空白のみの `q` は 400 を返す（`analytics-api` の `_normalize_q_param` と semantics 統一）。
+    client.post("/api/v1/metrics", json={"name": "cpu.usage", "value": 1.0})
+    resp = client.get("/api/v1/metrics/names?q=%20%20")
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "q must not be blank"
+
+
+def test_list_metric_names_q_too_long_returns_400():
+    # 128 文字超の `q` は 400 を返す。`MAX_METRIC_NAME_LENGTH` と一致。
+    client.post("/api/v1/metrics", json={"name": "cpu.usage", "value": 1.0})
+    long_q = "a" * 129
+    resp = client.get(f"/api/v1/metrics/names?q={long_q}")
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "q must be at most 128 characters"
+
+
+def test_list_metric_names_q_at_max_length_boundary_is_ok():
+    # ちょうど 128 文字の `q` は境界値として通す（`>` ではなく `>` 比較）。
+    client.post("/api/v1/metrics", json={"name": "cpu.usage", "value": 1.0})
+    boundary_q = "a" * 128
+    resp = client.get(f"/api/v1/metrics/names?q={boundary_q}")
+    # boundary_q は "aaaa..." であり "cpu.usage" と一致しないため空配列。
+    # ただし 400 にはならないこと（境界検査の回帰）。
+    assert resp.status_code == 200
+    assert resp.json() == {"names": [], "count": 0}
+
+
+def test_list_metric_names_q_preserves_count_and_latest_recorded_at():
+    # フィルタ後も各 name の count / latest_recorded_at は正しく返す。
+    client.post("/api/v1/metrics", json={"name": "db.reads", "value": 1.0})
+    r2 = client.post("/api/v1/metrics", json={"name": "db.reads", "value": 2.0})
+    r3 = client.post("/api/v1/metrics", json={"name": "db.writes", "value": 3.0})
+    resp = client.get("/api/v1/metrics/names?q=db")
+    assert resp.status_code == 200
+    names = resp.json()["names"]
+    reads = next(n for n in names if n["name"] == "db.reads")
+    writes = next(n for n in names if n["name"] == "db.writes")
+    assert reads["count"] == 2
+    assert reads["latest_recorded_at"] == r2.json()["recorded_at"]
+    assert writes["count"] == 1
+    assert writes["latest_recorded_at"] == r3.json()["recorded_at"]
+
+
 # ---- /api/v1/metrics/count ----
 
 def test_count_metrics_empty_store():
