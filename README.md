@@ -29,7 +29,7 @@ graph TB
 | Service | Language | Port | Role |
 |---------|----------|------|------|
 | **API Gateway** | Python (FastAPI) | 8000 | Metrics CRUD API — create, list, query, and delete metrics |
-| **Metrics Worker** | Go | 8001 | Statistical aggregation engine — computes sum, avg, min, max, range, std_dev, quartiles (p25/p75/iqr), and p50/p95/p99 |
+| **Metrics Worker** | Go | 8001 | Statistical aggregation engine — computes sum, avg, min, max, range, variance/std_dev/cv, skewness/kurtosis, mad, quartiles (p25/p75/iqr), and p50/p90/p95/p99 |
 | **Dashboard BFF** | TypeScript (Express) | 8002 | Backend-for-Frontend — dashboard-oriented metric views and summaries |
 
 ## Quick Start
@@ -142,8 +142,11 @@ curl -X POST http://localhost:8001/api/v1/aggregate \
 ```
 
 The response includes `count`, `sum`, `avg`, `min`, `max`, `range` (= max − min),
-`std_dev`, `median`, `p25`, `p75`, `iqr` (= p75 − p25), `p95`, and `p99`
-(percentiles are computed via linear interpolation).
+`variance`, `std_dev`, `cv` (変動係数)、`skewness`（母集団歪度）、`kurtosis`（母集団尖度）、
+`median`, `p25`, `p75`, `iqr` (= p75 − p25), `p90`, `p95`, `p99`
+(percentiles are computed via linear interpolation), および
+`mad`（中央値絶対偏差 = `median(|xᵢ - median|)`。std_dev の頑健版で、外れ値の影響を受けず
+中央部の代表的ばらつきを保つ。定数入力では 0）。
 
 **Hardening / DoS 対策:**
 
