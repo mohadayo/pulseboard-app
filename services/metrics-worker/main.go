@@ -84,6 +84,13 @@ type AggregateResponse struct {
 	// σ = 0（定数入力）の場合は定義不能 (0/0) なので 0 を返す（skewness の
 	// σ=0 ケースと同じ規約）。
 	Kurtosis float64 `json:"kurtosis"`
+	// 中央値絶対偏差 (Median Absolute Deviation): median(|xᵢ - median|)。
+	// 母集団モーメント系 (variance / std_dev / cv / skewness / kurtosis) が平均基準
+	// であるのに対し、MAD は中央値基準の頑健統計量。breakdown point 50% で、
+	// 稀な巨大スパイクが混ざっても中央部の代表的ばらつきを保つ。同じ単位を
+	// 保つのでダッシュボード表示にそのまま使える。定数入力では 0 を返す
+	// （absolute deviation がすべて 0 になる自然な結果、σ=0 の cv 規約と整合）。
+	MAD float64 `json:"mad"`
 }
 
 type HealthResponse struct {
@@ -263,7 +270,7 @@ func percentile(sorted []float64, pct float64) float64 {
 func (a AggregateResponse) hasNonFinite() bool {
 	for _, v := range []float64{
 		a.Sum, a.Avg, a.Min, a.Max, a.Range,
-		a.Variance, a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P90, a.P95, a.P99, a.CV, a.Skewness, a.Kurtosis,
+		a.Variance, a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P90, a.P95, a.P99, a.CV, a.Skewness, a.Kurtosis, a.MAD,
 	} {
 		if math.IsInf(v, 0) || math.IsNaN(v) {
 			return true
@@ -304,6 +311,17 @@ func computeAggregate(values []float64) AggregateResponse {
 
 	p25 := percentile(sorted, 25)
 	p75 := percentile(sorted, 75)
+	median := percentile(sorted, 50)
+
+	// 中央値絶対偏差 (MAD): |xᵢ - median| を集めてソートし、その中央値を取る。
+	// 母集団モーメント系と独立の O(n log n) パス（絶対偏差のソート）で算出する。
+	// 元の sorted は他の percentile 計算で使われているので破壊せず、絶対偏差用に別 slice を確保する。
+	absDev := make([]float64, n)
+	for i, v := range values {
+		absDev[i] = math.Abs(v - median)
+	}
+	sort.Float64s(absDev)
+	mad := percentile(absDev, 50)
 	// 変動係数: std_dev / |avg|。avg = 0 は定義不能なので 0 を返す
 	// （定数 0 入力では variance も 0 となり「ばらつき無し」相当として整合）。
 	cv := 0.0
@@ -348,7 +366,7 @@ func computeAggregate(values []float64) AggregateResponse {
 		Range:    maxVal - minVal,
 		Variance: variance,
 		StdDev:   stdDev,
-		Median:   percentile(sorted, 50),
+		Median:   median,
 		P25:      p25,
 		P75:      p75,
 		IQR:      p75 - p25,
@@ -358,6 +376,7 @@ func computeAggregate(values []float64) AggregateResponse {
 		CV:       cv,
 		Skewness: skewness,
 		Kurtosis: kurtosis,
+		MAD:      mad,
 	}
 }
 
