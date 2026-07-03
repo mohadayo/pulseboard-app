@@ -542,6 +542,82 @@ def count_metrics(
     }
 
 
+@app.get("/api/v1/metrics/by_day")
+def metrics_by_day(
+    name: Optional[str] = Query(
+        default=None,
+        description="メトリクス名の完全一致フィルタ。未指定なら全メトリクス横断で集計",
+    ),
+    since: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at >= since のレコードのみ集計",
+    ),
+    until: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at <= until のレコードのみ集計",
+    ),
+):
+    """保持中メトリクスを UTC 日付 (YYYY-MM-DD) でビニングし、日次時系列カウントを返す。
+
+    `/api/v1/metrics/count` が name 別合計、`/api/v1/metrics/{name}/stats` が期間集計
+    統計を返すのに対し、本エンドポイントは「いつ (どの UTC 日付に) どれだけレコードが
+    書き込まれたか」という時系列推移を 1 リクエストで返す。
+    ダッシュボード UI で日別トレンドグラフを描画する際、
+    `GET /api/v1/metrics?limit=最大` 経由の全件取得 → クライアント集計を回避できる。
+
+    バケットキーは `recorded_at` を UTC 正規化した `YYYY-MM-DD` 文字列。ISO 日付の
+    lex 昇順 = カレンダー昇順を保つため、追加のソートキー変換は不要。
+    populated-only: 母集団 0 の日は返さない（他サービスの by_day と同じ規約）。
+    破損した recorded_at (パース不能) は集計対象外（`_apply_time_filter` と同じ防御）。
+
+    レジストレーション位置: `/{metric_name}` ルートより前に置く必要がある
+    (FastAPI は登録順マッチで、後置だと `metric_name="by_day"` として捕捉される)。
+    既存 `/count` / `/names` と同じ規約。
+    """
+    since_dt, until_dt = _parse_since_until(since, until)
+
+    with _store_lock:
+        if name is not None:
+            entries = metrics_store.get(name)
+            snapshot: list[dict] = list(entries) if entries else []
+        else:
+            snapshot = []
+            for _n, ents in metrics_store.items():
+                snapshot.extend(ents)
+
+    filtered = _apply_time_filter(snapshot, since_dt, until_dt)
+
+    counts: dict[str, int] = {}
+    total = 0
+    for m in filtered:
+        raw_ts = m.get("recorded_at")
+        if not isinstance(raw_ts, str):
+            continue
+        try:
+            dt = datetime.fromisoformat(raw_ts)
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        day = dt.strftime("%Y-%m-%d")
+        counts[day] = counts.get(day, 0) + 1
+        total += 1
+
+    # ISO 日付 (YYYY-MM-DD) の lex 順は時系列順と一致するため、sorted で十分。
+    by_day = [{"day": d, "count": counts[d]} for d in sorted(counts.keys())]
+    logger.info(
+        "by_day requested: total=%d distinct_days=%d (name=%s since=%s until=%s)",
+        total, len(by_day), name, since, until,
+    )
+    return {
+        "total": total,
+        "distinct_days": len(by_day),
+        "by_day": by_day,
+    }
+
+
 @app.get("/api/v1/metrics/{metric_name}")
 def get_metrics_by_name(
     metric_name: str,
