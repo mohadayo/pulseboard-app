@@ -618,6 +618,82 @@ def metrics_by_day(
     }
 
 
+@app.get("/api/v1/metrics/by_hour_of_day")
+def metrics_by_hour_of_day(
+    name: Optional[str] = Query(
+        default=None,
+        description="メトリクス名の完全一致フィルタ。未指定なら全メトリクス横断で集計",
+    ),
+    since: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at >= since のレコードのみ集計",
+    ),
+    until: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at <= until のレコードのみ集計",
+    ),
+):
+    """保持中メトリクスを UTC 時刻 ("00"〜"23") でビニングし、時刻昇順の周期カウントを返す。
+
+    `/api/v1/metrics/by_day` は「いつ」流量があったかを直線時系列で見るのに対し、
+    本エンドポイントは「1 日のうちどの時間帯にレコード書き込みが集中しているか」
+    という周期パターンを 1 リクエストで返す。SLO 圏内での混雑時間帯特定・
+    キャパシティプランのシフト設計・cron スケジュール調整の根拠データとして
+    使う想定。
+
+    バケットキーは `recorded_at` を UTC 正規化した 2 桁ゼロ詰め時刻文字列
+    (`"00"`〜`"23"`)。lex 昇順 = 時間順を保つため、追加のソートキー変換は不要。
+    populated-only: 母集団 0 の時間帯は返さない（`by_day` と同じ規約）。
+    破損した recorded_at (パース不能) は集計対象外（`_apply_time_filter` と同じ防御）。
+
+    レジストレーション位置: `/{metric_name}` ルートより前に置く必要がある
+    (FastAPI は登録順マッチで、後置だと `metric_name="by_hour_of_day"` として
+    捕捉される)。既存 `/count` / `/names` / `/by_day` と同じ規約。
+    """
+    since_dt, until_dt = _parse_since_until(since, until)
+
+    with _store_lock:
+        if name is not None:
+            entries = metrics_store.get(name)
+            snapshot: list[dict] = list(entries) if entries else []
+        else:
+            snapshot = []
+            for _n, ents in metrics_store.items():
+                snapshot.extend(ents)
+
+    filtered = _apply_time_filter(snapshot, since_dt, until_dt)
+
+    counts: dict[str, int] = {}
+    total = 0
+    for m in filtered:
+        raw_ts = m.get("recorded_at")
+        if not isinstance(raw_ts, str):
+            continue
+        try:
+            dt = datetime.fromisoformat(raw_ts)
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        hour = dt.strftime("%H")
+        counts[hour] = counts.get(hour, 0) + 1
+        total += 1
+
+    # 2 桁ゼロ詰め時刻 ("00"〜"23") は lex 順 = 時間順のため sorted で十分。
+    by_hour_of_day = [{"hour": h, "count": counts[h]} for h in sorted(counts.keys())]
+    logger.info(
+        "by_hour_of_day requested: total=%d distinct_hours=%d (name=%s since=%s until=%s)",
+        total, len(by_hour_of_day), name, since, until,
+    )
+    return {
+        "total": total,
+        "distinct_hours": len(by_hour_of_day),
+        "by_hour_of_day": by_hour_of_day,
+    }
+
+
 @app.get("/api/v1/metrics/{metric_name}")
 def get_metrics_by_name(
     metric_name: str,
