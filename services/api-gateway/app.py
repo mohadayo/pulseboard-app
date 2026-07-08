@@ -771,6 +771,101 @@ def metrics_by_week(
     }
 
 
+# `strftime("%u")` の ISO 曜日番号 ("1"..."7") と、UI 表示用の 3 文字略称の対応表。
+# 月曜始まりで日曜が最後。lex 昇順 ("1"..."7") = 月〜日順を保つ。
+_WEEKDAY_NAMES = {
+    "1": "Mon",
+    "2": "Tue",
+    "3": "Wed",
+    "4": "Thu",
+    "5": "Fri",
+    "6": "Sat",
+    "7": "Sun",
+}
+
+
+@app.get("/api/v1/metrics/by_day_of_week")
+def metrics_by_day_of_week(
+    name: Optional[str] = Query(
+        default=None,
+        description="メトリクス名の完全一致フィルタ。未指定なら全メトリクス横断で集計",
+    ),
+    since: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at >= since のレコードのみ集計",
+    ),
+    until: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at <= until のレコードのみ集計",
+    ),
+):
+    """保持中メトリクスを UTC 曜日 ("1" 月曜〜"7" 日曜) でビニングし、月〜日順の周期カウントを返す。
+
+    `/api/v1/metrics/by_hour_of_day` が「1 日のうちどの時間帯に負荷が集中するか」を
+    返すのに対し、本エンドポイントは「1 週間のうちどの曜日に集中するか」という
+    もう 1 段粗い周期軸を 1 リクエストで返す。週末と平日でロード傾向が変わる SaaS
+    的ワークロードでの土日フラット化や、月曜バッチ集中の可視化などに使う想定。
+
+    バケットキーは `recorded_at` を UTC 正規化して `strftime("%u")` で得られる
+    ISO 曜日番号 (`"1"` = 月曜 〜 `"7"` = 日曜) の文字列。lex 昇順 = 月〜日順を
+    保つため、追加のソートキー変換は不要。各行には `day` (曜日番号) に加え、
+    UI 側での存在チェック不要ラベル用に `weekday_name` ("Mon"..."Sun") を付ける。
+    populated-only: 母集団 0 の曜日は返さない（`by_hour_of_day` / `by_day` と同じ規約）。
+    破損した recorded_at (パース不能) は集計対象外（`_apply_time_filter` と同じ防御）。
+
+    レジストレーション位置: `/{metric_name}` ルートより前に置く必要がある
+    (FastAPI は登録順マッチで、後置だと `metric_name="by_day_of_week"` として
+    捕捉される)。既存 `/count` / `/names` / `/by_day` / `/by_hour_of_day` /
+    `/by_week` と同じ規約。
+    """
+    since_dt, until_dt = _parse_since_until(since, until)
+
+    with _store_lock:
+        if name is not None:
+            entries = metrics_store.get(name)
+            snapshot: list[dict] = list(entries) if entries else []
+        else:
+            snapshot = []
+            for _n, ents in metrics_store.items():
+                snapshot.extend(ents)
+
+    filtered = _apply_time_filter(snapshot, since_dt, until_dt)
+
+    counts: dict[str, int] = {}
+    total = 0
+    for m in filtered:
+        raw_ts = m.get("recorded_at")
+        if not isinstance(raw_ts, str):
+            continue
+        try:
+            dt = datetime.fromisoformat(raw_ts)
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        day = dt.strftime("%u")  # "1" (Mon) 〜 "7" (Sun)
+        counts[day] = counts.get(day, 0) + 1
+        total += 1
+
+    # ISO 曜日番号 ("1"..."7") は lex 順 = 月〜日順のため sorted で十分。
+    by_day_of_week = [
+        {"day": d, "weekday_name": _WEEKDAY_NAMES[d], "count": counts[d]}
+        for d in sorted(counts.keys())
+    ]
+    logger.info(
+        "by_day_of_week requested: total=%d distinct_days_of_week=%d "
+        "(name=%s since=%s until=%s)",
+        total, len(by_day_of_week), name, since, until,
+    )
+    return {
+        "total": total,
+        "distinct_days_of_week": len(by_day_of_week),
+        "by_day_of_week": by_day_of_week,
+    }
+
+
 @app.get("/api/v1/metrics/{metric_name}")
 def get_metrics_by_name(
     metric_name: str,
