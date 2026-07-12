@@ -91,6 +91,14 @@ type AggregateResponse struct {
 	// 保つのでダッシュボード表示にそのまま使える。定数入力では 0 を返す
 	// （absolute deviation がすべて 0 になる自然な結果、σ=0 の cv 規約と整合）。
 	MAD float64 `json:"mad"`
+	// 10% トリム平均: 昇順ソート後、下位 10% と上位 10% を除いた中央 80% の算術平均。
+	// 外れ値耐性と分布形状の反映を両立する「代表的な典型値」で、SRE ダッシュボードの
+	// 「typical latency」列に据え置きしても p95 / p99 スパイクを希釈しない。
+	//
+	// 切り落とし数は `floor(n * 0.1)`。`n < 5` では切り落とし数が 0 になり
+	// `avg` と同値を返す（退化ケースをエンコード可能な値に寄せる、cv / skewness /
+	// kurtosis の σ=0 規約と整合）。
+	TrimmedMean10 float64 `json:"trimmed_mean_10"`
 }
 
 type HealthResponse struct {
@@ -244,6 +252,34 @@ func aggregateHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
+// trimmedMean は昇順ソート済み values から、両端 fraction 分を切り落として算術平均を取る。
+// fraction は 0.0〜0.5 の範囲（0.1 で下位 10% と上位 10% を除く = 中央 80% の平均）。
+//
+// 切り落とし数は `floor(n * fraction)` で、両端で同数を除く（対称）。
+// `n * fraction < 1` となる小さい n（例: n < 10 かつ fraction = 0.1）では
+// 切り落とし数が 0 になり、通常の算術平均と一致する。特に n = 0 の場合は 0 を返す。
+//
+// テスト容易性のためにパッケージレベル関数として切り出す。呼び元 (`computeAggregate`)
+// は既に median 計算用にソート済み slice を保持しているため、再ソートは行わない。
+func trimmedMean(sorted []float64, fraction float64) float64 {
+	n := len(sorted)
+	if n == 0 {
+		return 0
+	}
+	trim := int(math.Floor(float64(n) * fraction))
+	// 両端合計で n 以上を切り落とすと残り 0 件になり定義不能。
+	// fraction を 0.5 以上に指定した場合の防御。
+	if 2*trim >= n {
+		trim = 0
+	}
+	kept := sorted[trim : n-trim]
+	sum := 0.0
+	for _, v := range kept {
+		sum += v
+	}
+	return sum / float64(len(kept))
+}
+
 // percentile は昇順ソート済みの values から、線形補間による pct パーセンタイル値を返す。
 // pct は 0～100 の範囲。空スライスの場合は 0 を返す。
 func percentile(sorted []float64, pct float64) float64 {
@@ -270,7 +306,7 @@ func percentile(sorted []float64, pct float64) float64 {
 func (a AggregateResponse) hasNonFinite() bool {
 	for _, v := range []float64{
 		a.Sum, a.Avg, a.Min, a.Max, a.Range,
-		a.Variance, a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P90, a.P95, a.P99, a.CV, a.Skewness, a.Kurtosis, a.MAD,
+		a.Variance, a.StdDev, a.Median, a.P25, a.P75, a.IQR, a.P90, a.P95, a.P99, a.CV, a.Skewness, a.Kurtosis, a.MAD, a.TrimmedMean10,
 	} {
 		if math.IsInf(v, 0) || math.IsNaN(v) {
 			return true
@@ -358,25 +394,26 @@ func computeAggregate(values []float64) AggregateResponse {
 		kurtosis = m4 / (sigma2 * sigma2)
 	}
 	return AggregateResponse{
-		Count:    n,
-		Sum:      sum,
-		Avg:      avg,
-		Min:      minVal,
-		Max:      maxVal,
-		Range:    maxVal - minVal,
-		Variance: variance,
-		StdDev:   stdDev,
-		Median:   median,
-		P25:      p25,
-		P75:      p75,
-		IQR:      p75 - p25,
-		P90:      percentile(sorted, 90),
-		P95:      percentile(sorted, 95),
-		P99:      percentile(sorted, 99),
-		CV:       cv,
-		Skewness: skewness,
-		Kurtosis: kurtosis,
-		MAD:      mad,
+		Count:         n,
+		Sum:           sum,
+		Avg:           avg,
+		Min:           minVal,
+		Max:           maxVal,
+		Range:         maxVal - minVal,
+		Variance:      variance,
+		StdDev:        stdDev,
+		Median:        median,
+		P25:           p25,
+		P75:           p75,
+		IQR:           p75 - p25,
+		P90:           percentile(sorted, 90),
+		P95:           percentile(sorted, 95),
+		P99:           percentile(sorted, 99),
+		CV:            cv,
+		Skewness:      skewness,
+		Kurtosis:      kurtosis,
+		MAD:           mad,
+		TrimmedMean10: trimmedMean(sorted, 0.1),
 	}
 }
 
