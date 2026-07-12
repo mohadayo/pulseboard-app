@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1013,5 +1014,152 @@ func TestHealthHandler_LogsAtDebugLevel(t *testing.T) {
 	}
 	if got := buf.String(); !bytes.Contains([]byte(got), []byte("Health check requested")) {
 		t.Errorf("/health should log at DEBUG level, but got: %q", got)
+	}
+}
+
+// TestTrimmedMean_Helper は trimmedMean ヘルパーの境界挙動を単体で検証する。
+// n が小さくて切り落とし数が 0 になるケース、両端対称に切り落とすケース、
+// 定数入力ケース、fraction=0.5 以上での自己防御ケースを網羅する。
+func TestTrimmedMean_Helper(t *testing.T) {
+	cases := []struct {
+		name     string
+		sorted   []float64
+		fraction float64
+		want     float64
+	}{
+		{
+			name:     "empty returns 0",
+			sorted:   []float64{},
+			fraction: 0.1,
+			want:     0,
+		},
+		{
+			name:     "n=1 keeps single value (trim=0)",
+			sorted:   []float64{42},
+			fraction: 0.1,
+			want:     42,
+		},
+		{
+			name:     "n=9 fraction=0.1 trims 0 (floor(0.9)=0)",
+			sorted:   []float64{1, 2, 3, 4, 5, 6, 7, 8, 9},
+			fraction: 0.1,
+			want:     5, // == avg
+		},
+		{
+			name:     "n=10 fraction=0.1 trims 1 each side, mean of [2..9]",
+			sorted:   []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+			fraction: 0.1,
+			want:     5.5,
+		},
+		{
+			name:     "n=10 with extreme outlier reduces mean to median-like",
+			sorted:   []float64{1, 1, 1, 1, 1, 1, 1, 1, 1, 10000},
+			fraction: 0.1,
+			// trim=1: keep sorted[1..9] = [1,1,1,1,1,1,1,1] → mean=1
+			want: 1,
+		},
+		{
+			name:     "constant input equals that constant",
+			sorted:   []float64{7, 7, 7, 7, 7, 7, 7, 7, 7, 7},
+			fraction: 0.1,
+			want:     7,
+		},
+		{
+			name:     "fraction 0.5 would empty the slice → falls back to full mean",
+			sorted:   []float64{1, 2, 3, 4},
+			fraction: 0.5,
+			// 2*trim=4=n → guard resets trim to 0, mean of [1,2,3,4]=2.5
+			want: 2.5,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := trimmedMean(tc.sorted, tc.fraction)
+			if math.Abs(got-tc.want) > 1e-9 {
+				t.Errorf("trimmedMean(%v, %v) = %v, want %v", tc.sorted, tc.fraction, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestComputeAggregate_TrimmedMean10 は AggregateResponse.TrimmedMean10 が
+// 期待通り計算されることを確認する。既存フィールド (avg/median/mad) の値には
+// 影響を与えないことを合わせて確認する。
+func TestComputeAggregate_TrimmedMean10(t *testing.T) {
+	t.Run("n=10 with outlier, trimmed_mean_10 pulls away from avg toward median", func(t *testing.T) {
+		values := []float64{1, 1, 1, 1, 1, 1, 1, 1, 1, 10000}
+		got := computeAggregate(values)
+		// avg = (9*1 + 10000)/10 = 1000.9
+		if math.Abs(got.Avg-1000.9) > 1e-9 {
+			t.Errorf("Avg = %v, want 1000.9", got.Avg)
+		}
+		// median = mean of 5th/6th element = 1
+		if got.Median != 1 {
+			t.Errorf("Median = %v, want 1", got.Median)
+		}
+		// trimmed_mean_10 = 1 (すべての外れ値 1 件が切り落とされる)
+		if got.TrimmedMean10 != 1 {
+			t.Errorf("TrimmedMean10 = %v, want 1", got.TrimmedMean10)
+		}
+	})
+
+	t.Run("n < 10 (trim=0) equals avg", func(t *testing.T) {
+		values := []float64{2, 4, 6, 8}
+		got := computeAggregate(values)
+		if got.TrimmedMean10 != got.Avg {
+			t.Errorf("TrimmedMean10 = %v, want == Avg = %v", got.TrimmedMean10, got.Avg)
+		}
+	})
+
+	t.Run("constant input equals that constant", func(t *testing.T) {
+		values := []float64{3, 3, 3, 3, 3, 3, 3, 3, 3, 3}
+		got := computeAggregate(values)
+		if got.TrimmedMean10 != 3 {
+			t.Errorf("TrimmedMean10 = %v, want 3", got.TrimmedMean10)
+		}
+	})
+
+	t.Run("uniform sequence trimmed_mean_10 equals avg (symmetric distribution)", func(t *testing.T) {
+		// 昇順 [1..10]、下位 1 (=1) と上位 1 (=10) を切り落とす → mean([2..9]) = 5.5
+		values := []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+		got := computeAggregate(values)
+		if got.TrimmedMean10 != 5.5 {
+			t.Errorf("TrimmedMean10 = %v, want 5.5", got.TrimmedMean10)
+		}
+		// 対称分布なので avg と同値
+		if got.TrimmedMean10 != got.Avg {
+			t.Errorf("TrimmedMean10 = %v, Avg = %v; expected equal for symmetric input",
+				got.TrimmedMean10, got.Avg)
+		}
+	})
+}
+
+// TestAggregate_JSONIncludesTrimmedMean10 は /api/v1/aggregate のレスポンス JSON に
+// "trimmed_mean_10" キーが含まれることを回帰保証する。struct タグの typo で
+// silent に "TrimmedMean10" 等になる事故を検出する。
+func TestAggregate_JSONIncludesTrimmedMean10(t *testing.T) {
+	body := strings.NewReader(`{"values":[1,2,3,4,5,6,7,8,9,10]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/aggregate", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	aggregateHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	v, ok := raw["trimmed_mean_10"]
+	if !ok {
+		t.Fatalf("response is missing \"trimmed_mean_10\" key: %s", w.Body.String())
+	}
+	f, ok := v.(float64)
+	if !ok {
+		t.Fatalf("trimmed_mean_10 is not a number: %#v", v)
+	}
+	if f != 5.5 {
+		t.Errorf("trimmed_mean_10 = %v, want 5.5", f)
 	}
 }
