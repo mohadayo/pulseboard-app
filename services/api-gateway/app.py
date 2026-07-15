@@ -866,6 +866,84 @@ def metrics_by_day_of_week(
     }
 
 
+@app.get("/api/v1/metrics/by_month")
+def metrics_by_month(
+    name: Optional[str] = Query(
+        default=None,
+        description="メトリクス名の完全一致フィルタ。未指定なら全メトリクス横断で集計",
+    ),
+    since: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at >= since のレコードのみ集計",
+    ),
+    until: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at <= until のレコードのみ集計",
+    ),
+):
+    """保持中メトリクスを月 (YYYY-MM) でビニングし、月次時系列カウントを返す。
+
+    `/api/v1/metrics/by_week` (ISO 週線形) と `/api/v1/metrics/by_day` (日次線形) が
+    それぞれ数週〜四半期スパンを想定するのに対し、本エンドポイントは半年〜複数年の
+    「月次流量トレンド」を 1 リクエストで返す。日次だと点が多過ぎ、週次でも
+    12 ヶ月超のスパンでは読みにくい中間解像度のニーズをカバーする。
+
+    バケットキーは `recorded_at` を UTC 正規化して `strftime("%Y-%m")` で
+    グレゴリオ暦の年月に丸めた文字列（例: `"2026-06"`）。ISO 週と違い暦月に
+    従うため、四半期/半期/年次ダッシュボードで直感的に集計できる。
+    lex 昇順 = カレンダー月昇順を保つため、追加のソートキー変換は不要。
+    populated-only: 母集団 0 の月は返さない（`by_day` / `by_week` と同じ規約）。
+    破損した recorded_at (パース不能) は集計対象外（`_apply_time_filter` と同じ防御）。
+
+    レジストレーション位置: `/{metric_name}` ルートより前に置く必要がある
+    (FastAPI は登録順マッチで、後置だと `metric_name="by_month"` として捕捉される)。
+    既存 `/count` / `/names` / `/by_day` / `/by_hour_of_day` / `/by_week` /
+    `/by_day_of_week` と同じ規約。
+    """
+    since_dt, until_dt = _parse_since_until(since, until)
+
+    with _store_lock:
+        if name is not None:
+            entries = metrics_store.get(name)
+            snapshot: list[dict] = list(entries) if entries else []
+        else:
+            snapshot = []
+            for _n, ents in metrics_store.items():
+                snapshot.extend(ents)
+
+    filtered = _apply_time_filter(snapshot, since_dt, until_dt)
+
+    counts: dict[str, int] = {}
+    total = 0
+    for m in filtered:
+        raw_ts = m.get("recorded_at")
+        if not isinstance(raw_ts, str):
+            continue
+        try:
+            dt = datetime.fromisoformat(raw_ts)
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        month = dt.strftime("%Y-%m")
+        counts[month] = counts.get(month, 0) + 1
+        total += 1
+
+    # YYYY-MM は lex 順 = カレンダー月順のため sorted で十分。
+    by_month = [{"month": m, "count": counts[m]} for m in sorted(counts.keys())]
+    logger.info(
+        "by_month requested: total=%d distinct_months=%d (name=%s since=%s until=%s)",
+        total, len(by_month), name, since, until,
+    )
+    return {
+        "total": total,
+        "distinct_months": len(by_month),
+        "by_month": by_month,
+    }
+
+
 @app.get("/api/v1/metrics/{metric_name}")
 def get_metrics_by_name(
     metric_name: str,
