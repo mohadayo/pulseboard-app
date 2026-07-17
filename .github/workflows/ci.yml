@@ -6,9 +6,17 @@ on:
   pull_request:
     branches: [main]
 
+# 同一ワークフロー・同一 ref (PR ブランチや main) で新しいジョブが起動したら、
+# 進行中の古いジョブをキャンセルする。PR に短時間で連続 push した場合の
+# 実行枠・実行時間の無駄を削減する。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-python:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: services/api-gateway
@@ -25,6 +33,7 @@ jobs:
 
   test-go:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: services/metrics-worker
@@ -40,6 +49,7 @@ jobs:
 
   test-typescript:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: services/dashboard-bff
@@ -56,6 +66,7 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [test-python, test-go, test-typescript]
     steps:
       - uses: actions/checkout@v4
