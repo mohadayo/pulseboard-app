@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: セキュリティに関わる報告
+    url: https://github.com/mohadayo/pulseboard-app/blob/main/SECURITY.md
+    about: セキュリティ問題は公開 Issue ではなく SECURITY.md の手順に従って報告してください。

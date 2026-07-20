@@ -1,0 +1,19 @@
+# pulseboard-app の CODEOWNERS
+#
+# 変更範囲に応じて自動的にレビューがリクエストされます。
+# 詳細: https://docs.github.com/ja/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
+
+# デフォルトはリポジトリ管理者
+*                                @mohadayo
+
+# 各サービス
+/services/api-gateway/           @mohadayo
+/services/dashboard-bff/         @mohadayo
+/services/metrics-worker/        @mohadayo
+
+# CI / インフラ / ドキュメント
+/.github/                        @mohadayo
+/docker-compose.yml              @mohadayo
+/Makefile                        @mohadayo
+/README.md                       @mohadayo
+/SECURITY.md                     @mohadayo
