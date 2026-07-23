@@ -1,0 +1,110 @@
+# .gitattributes for pulseboard-app (Python / Go / TypeScript microservices)
+#
+# 目的:
+#   1. すべてのテキストファイルの行末を LF に正規化し、
+#      Windows / macOS / Linux の混在チェックアウトでも安定した差分を維持する。
+#   2. 言語ごとに適切な diff ドライバ・行末を明示する。
+#   3. バイナリファイル (画像・アーカイブ等) を明示的にバイナリとして扱う。
+#   4. GitHub Linguist の言語判定に必要なヒントを付与する。
+
+# ------------------------------------------------------------------------------
+# デフォルト: すべてのテキストファイルを自動判定し、リポジトリ内では LF で保存
+# ------------------------------------------------------------------------------
+* text=auto eol=lf
+
+# ------------------------------------------------------------------------------
+# Python (services/api-gateway)
+# ------------------------------------------------------------------------------
+*.py           text eol=lf diff=python
+*.pyi          text eol=lf diff=python
+requirements*.txt text eol=lf
+Pipfile        text eol=lf
+Pipfile.lock   text eol=lf
+pyproject.toml text eol=lf
+
+# ------------------------------------------------------------------------------
+# Go (services/metrics-worker)
+# ------------------------------------------------------------------------------
+*.go           text eol=lf diff=golang
+go.mod         text eol=lf
+go.sum         text eol=lf
+
+# ------------------------------------------------------------------------------
+# TypeScript / JavaScript (services/dashboard-bff)
+# ------------------------------------------------------------------------------
+*.ts           text eol=lf
+*.tsx          text eol=lf
+*.js           text eol=lf
+*.jsx          text eol=lf
+*.mjs          text eol=lf
+*.cjs          text eol=lf
+*.json         text eol=lf
+package.json         text eol=lf
+package-lock.json    text eol=lf linguist-generated=true
+tsconfig*.json       text eol=lf
+.eslintrc*     text eol=lf
+
+# ------------------------------------------------------------------------------
+# Docker / インフラ設定
+# ------------------------------------------------------------------------------
+Dockerfile     text eol=lf
+*.dockerfile   text eol=lf
+docker-compose*.yml  text eol=lf
+docker-compose*.yaml text eol=lf
+
+# ------------------------------------------------------------------------------
+# ドキュメント / シェル / 設定
+# ------------------------------------------------------------------------------
+*.md           text eol=lf
+*.yml          text eol=lf
+*.yaml         text eol=lf
+*.toml         text eol=lf
+*.ini          text eol=lf
+*.cfg          text eol=lf
+*.sh           text eol=lf
+*.bash         text eol=lf
+Makefile       text eol=lf
+
+# Windows 固有スクリプトは CRLF を保持
+*.bat          text eol=crlf
+*.cmd          text eol=crlf
+*.ps1          text eol=crlf
+
+# ------------------------------------------------------------------------------
+# バイナリ / メディア (差分不要)
+# ------------------------------------------------------------------------------
+*.png          binary
+*.jpg          binary
+*.jpeg         binary
+*.gif          binary
+*.ico          binary
+*.svg          binary
+*.pdf          binary
+*.ttf          binary
+*.otf          binary
+*.woff         binary
+*.woff2        binary
+*.zip          binary
+*.tar          binary
+*.tar.gz       binary
+*.tgz          binary
+*.gz           binary
+*.rar          binary
+*.7z           binary
+*.jar          binary
+*.war          binary
+*.class        binary
+*.pyc          binary
+*.pyo          binary
+*.so           binary
+*.dylib        binary
+*.dll          binary
+*.exe          binary
+
+# ------------------------------------------------------------------------------
+# GitHub Linguist ヒント
+#   自動生成物・ロックファイルを言語統計から除外する。
+# ------------------------------------------------------------------------------
+package-lock.json  linguist-generated=true
+*.lock             linguist-generated=true
+go.sum             linguist-generated=true
