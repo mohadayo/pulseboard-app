@@ -1,0 +1,43 @@
+# Node.js dependencies / build output
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Test / coverage artifacts
+tests/
+coverage/
+.nyc_output/
+
+# Linter / cache
+.eslintcache
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# VCS / editor / OS
+.git/
+.gitignore
+.gitattributes
+.github/
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Docs (not needed inside the image)
+*.md
+LICENSE
+
+# Dockerfile itself and this file
+Dockerfile
+.dockerignore

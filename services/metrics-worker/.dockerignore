@@ -1,0 +1,34 @@
+# Go build artifacts
+*.exe
+*.test
+*.out
+metrics-worker
+
+# Go tests (built into the binary as needed; not required inside the image)
+*_test.go
+testdata/
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# VCS / editor / OS
+.git/
+.gitignore
+.gitattributes
+.github/
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Docs (not needed inside the image)
+*.md
+LICENSE
+
+# Dockerfile itself and this file
+Dockerfile
+.dockerignore

@@ -1,0 +1,46 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Test / coverage artifacts
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Linter caches
+.mypy_cache/
+.ruff_cache/
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# VCS / editor / OS
+.git/
+.gitignore
+.gitattributes
+.github/
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Docs (not needed inside the image)
+*.md
+LICENSE
+
+# Dockerfile itself and this file
+Dockerfile
+.dockerignore
