@@ -1361,8 +1361,64 @@ export {
   validateTags,
 };
 
+// SIGTERM 受信後、進行中リクエストの完了を待つ最大時間 (ms)。
+// Kubernetes の既定 grace period (30s) より短めに設定し、SIGKILL が
+// 飛ぶ前に確実にプロセスを終了させる。
+function parseShutdownTimeoutMs(): number {
+  const raw = process.env.SHUTDOWN_TIMEOUT_MS;
+  if (raw === undefined || raw === "") {
+    return 10000;
+  }
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    log("WARN", `Invalid SHUTDOWN_TIMEOUT_MS=${raw}, falling back to 10000`);
+    return 10000;
+  }
+  return parsed;
+}
+
 if (require.main === module) {
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     log("INFO", `Dashboard BFF started on port ${PORT}`);
   });
+
+  const shutdownTimeoutMs = parseShutdownTimeoutMs();
+  let shuttingDown = false;
+  // SIGTERM / SIGINT を受けたら新規接続の受付を止め、進行中リクエストを
+  // 完了させたうえで終了する。タイムアウト超過時は強制終了 (exit 1)。
+  // Docker/Kubernetes 環境でのローリングアップデート中に、リクエストの
+  // 途中切断や 5xx を発生させないための実装。
+  const shutdown = (signal: string): void => {
+    if (shuttingDown) {
+      // 二重シグナル（SIGTERM→SIGINT 等）を受けても close コールバックが
+      // 1 回しか呼ばれないよう、二重進入を弾く。
+      return;
+    }
+    shuttingDown = true;
+    log("INFO", `Received ${signal}, shutting down gracefully`);
+    const forceExit = setTimeout(() => {
+      log(
+        "ERROR",
+        `Graceful shutdown timed out after ${shutdownTimeoutMs}ms, forcing exit`,
+      );
+      process.exit(1);
+    }, shutdownTimeoutMs);
+    // 待機用タイマー自体でイベントループを塞がないよう unref する
+    // — 進行中リクエストが早期に完了した際、タイマーが原因でプロセスが
+    // 生き残り続けるのを防ぐ。
+    forceExit.unref();
+
+    server.close((err) => {
+      clearTimeout(forceExit);
+      if (err) {
+        log("ERROR", `Error during server shutdown: ${err.message}`);
+        process.exit(1);
+      }
+      log("INFO", "Server closed cleanly");
+      process.exit(0);
+    });
+  };
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
