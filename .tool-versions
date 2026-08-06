@@ -1,0 +1,7 @@
+# asdf / mise 向けのツールチェインバージョン固定。
+# CI (.github/workflows/ci.yml) と同じバージョンをローカルでも使うために列挙する。
+# 各サービスの .python-version / .go-version / .nvmrc と重複するが、
+# asdf/mise を使う開発者はこの 1 ファイルだけで全言語をセットアップできる。
+python 3.12
+golang 1.22
+nodejs 20
