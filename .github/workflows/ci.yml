@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+# ワークフロー全体のデフォルト権限を最小化する（OpenSSF Scorecard 準拠）。
+# 本 CI はコード取得 (checkout) と静的解析 / テスト実行 / ローカル docker build のみで、
+# Issue / PR / Deployment / Pages / Packages への書き込みは一切行わない。
+# そのため既定を `contents: read` に絞り、依存 Action が侵害された際の
+# blast radius を最小化する。将来ジョブごとに追加権限が必要になった場合は
+# job レベルの `permissions:` で override する。
+permissions:
+  contents: read
+
 # 同一ワークフロー・同一 ref (PR ブランチや main) で新しいジョブが起動したら、
 # 進行中の古いジョブをキャンセルする。PR に短時間で連続 push した場合の
 # 実行枠・実行時間の無駄を削減する。
