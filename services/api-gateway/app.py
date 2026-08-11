@@ -944,6 +944,86 @@ def metrics_by_month(
     }
 
 
+@app.get("/api/v1/metrics/by_year")
+def metrics_by_year(
+    name: Optional[str] = Query(
+        default=None,
+        description="メトリクス名の完全一致フィルタ。未指定なら全メトリクス横断で集計",
+    ),
+    since: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at >= since のレコードのみ集計",
+    ),
+    until: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at <= until のレコードのみ集計",
+    ),
+):
+    """保持中メトリクスを暦年 (YYYY) でビニングし、年次時系列カウントを返す。
+
+    `/api/v1/metrics/by_month` (YYYY-MM) が半年〜複数年スパンを想定するのに対し、
+    本エンドポイントは数年〜十数年の「年次流量トレンド」を 1 リクエストで返す。
+    月次だと点が多過ぎる多年スパン（5 年 × 12 ヶ月 = 60 点超）のダッシュボードや、
+    年次サマリレポートで直接使える中間解像度をカバーする。
+
+    バケットキーは `recorded_at` を UTC 正規化して `strftime("%Y")` で得られる
+    暦年文字列（例: `"2026"`）。ISO 週と違い暦年に完全一致するため、
+    12/31 と 1/1 は必ず別バケットになる（`by_week` のような年跨ぎの ISO 週
+    への吸収は発生しない）。lex 昇順 = カレンダー年昇順を保つため、追加の
+    ソートキー変換は不要。
+    populated-only: 母集団 0 の年は返さない（`by_day` / `by_week` / `by_month`
+    と同じ規約）。破損した recorded_at (パース不能) は集計対象外
+    （`_apply_time_filter` と同じ防御）。
+
+    レジストレーション位置: `/{metric_name}` ルートより前に置く必要がある
+    (FastAPI は登録順マッチで、後置だと `metric_name="by_year"` として捕捉される)。
+    既存 `/count` / `/names` / `/by_day` / `/by_hour_of_day` / `/by_week` /
+    `/by_day_of_week` / `/by_month` と同じ規約。
+    """
+    since_dt, until_dt = _parse_since_until(since, until)
+
+    with _store_lock:
+        if name is not None:
+            entries = metrics_store.get(name)
+            snapshot: list[dict] = list(entries) if entries else []
+        else:
+            snapshot = []
+            for _n, ents in metrics_store.items():
+                snapshot.extend(ents)
+
+    filtered = _apply_time_filter(snapshot, since_dt, until_dt)
+
+    counts: dict[str, int] = {}
+    total = 0
+    for m in filtered:
+        raw_ts = m.get("recorded_at")
+        if not isinstance(raw_ts, str):
+            continue
+        try:
+            dt = datetime.fromisoformat(raw_ts)
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        year = dt.strftime("%Y")
+        counts[year] = counts.get(year, 0) + 1
+        total += 1
+
+    # YYYY は lex 順 = カレンダー年順のため sorted で十分。
+    by_year = [{"year": y, "count": counts[y]} for y in sorted(counts.keys())]
+    logger.info(
+        "by_year requested: total=%d distinct_years=%d (name=%s since=%s until=%s)",
+        total, len(by_year), name, since, until,
+    )
+    return {
+        "total": total,
+        "distinct_years": len(by_year),
+        "by_year": by_year,
+    }
+
+
 @app.get("/api/v1/metrics/{metric_name}")
 def get_metrics_by_name(
     metric_name: str,
