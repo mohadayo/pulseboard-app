@@ -1163,3 +1163,29 @@ func TestAggregate_JSONIncludesTrimmedMean10(t *testing.T) {
 		t.Errorf("trimmed_mean_10 = %v, want 5.5", f)
 	}
 }
+
+// TestAggregateResponseHasNonFinite_DetectsTrimmedMean10 は hasNonFinite() の
+// 走査対象に TrimmedMean10 が組み込まれていることを検証する。他の統計フィールド
+// (Range/IQR/P25/P75/P90/CV/Variance/Kurtosis/MAD) には同種の回帰テストが
+// 揃っているが、最新追加の TrimmedMean10 だけが未カバーだった。将来 hasNonFinite の
+// 走査対象リストから誤って TrimmedMean10 を外すリファクタが入っても、この
+// テストが検出する。mad_test.go の TestAggregateResponseHasNonFinite_DetectsMAD
+// と同じテーブル駆動パターン。
+func TestAggregateResponseHasNonFinite_DetectsTrimmedMean10(t *testing.T) {
+	cases := []struct {
+		name          string
+		trimmedMean10 float64
+	}{
+		{"NaN", math.NaN()},
+		{"+Inf", math.Inf(1)},
+		{"-Inf", math.Inf(-1)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := AggregateResponse{TrimmedMean10: tc.trimmedMean10}
+			if !resp.hasNonFinite() {
+				t.Errorf("hasNonFinite should detect TrimmedMean10 = %v as non-finite", tc.trimmedMean10)
+			}
+		})
+	}
+}
