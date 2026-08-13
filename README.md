@@ -147,9 +147,13 @@ curl -X POST http://localhost:8001/api/v1/aggregate \
 The response includes `count`, `sum`, `avg`, `min`, `max`, `range` (= max − min),
 `variance`, `std_dev`, `cv` (変動係数)、`skewness`（母集団歪度）、`kurtosis`（母集団尖度）、
 `median`, `p25`, `p75`, `iqr` (= p75 − p25), `p90`, `p95`, `p99`
-(percentiles are computed via linear interpolation), および
+(percentiles are computed via linear interpolation),
 `mad`（中央値絶対偏差 = `median(|xᵢ - median|)`。std_dev の頑健版で、外れ値の影響を受けず
-中央部の代表的ばらつきを保つ。定数入力では 0）。
+中央部の代表的ばらつきを保つ。定数入力では 0）、および
+`outlier_count`（Tukey フェンス外れ値件数: `x < p25 - 1.5*IQR` または `x > p75 + 1.5*IQR`
+を満たす値の個数。`mad` が「頑健な scale」を返すのに対し `outlier_count` は
+「外れ値の count」を返す補完的な頑健統計。p95 悪化が分布シフトか単発スパイクかの
+切り分けに使う。単一要素・定数入力では IQR=0 でフェンスが 1 点に縮退するため 0 を返す）。
 
 **Hardening / DoS 対策:**
 

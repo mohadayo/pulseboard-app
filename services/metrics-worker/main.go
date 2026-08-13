@@ -99,6 +99,21 @@ type AggregateResponse struct {
 	// `avg` と同値を返す（退化ケースをエンコード可能な値に寄せる、cv / skewness /
 	// kurtosis の σ=0 規約と整合）。
 	TrimmedMean10 float64 `json:"trimmed_mean_10"`
+	// Tukey フェンスに基づく外れ値件数: `x < p25 - 1.5*IQR` または `x > p75 + 1.5*IQR`
+	// を満たす値の個数。既存 `mad` が「頑健なばらつき (scale)」を返すのに対し、
+	// `outlier_count` は「外れ値の件数 (count)」を返す補完的な頑健統計。
+	//
+	// SRE ダッシュボードでは p95 悪化が「分布シフト」か「単発スパイク」かの
+	// 切り分けに使う（外れ値件数が小さければ後者、大きければ前者）。
+	//
+	// 退化ケース:
+	//   - n = 1: p25 == p75、IQR = 0 → フェンスは 1 点に縮退 → 0 件
+	//   - 定数入力 (全値同値): IQR = 0 → 全値がフェンスに乗る → 0 件
+	//   （いずれも cv / skewness / kurtosis の σ=0 規約と同じく「退化ケースは 0」）
+	//
+	// 実装は既に計算済みの sorted / p25 / p75 を再利用し、追加ソートは行わない。
+	// int なので hasNonFinite() の走査対象には含めない（NaN/Inf 不能）。
+	OutlierCount int `json:"outlier_count"`
 }
 
 type HealthResponse struct {
@@ -393,6 +408,26 @@ func computeAggregate(values []float64) AggregateResponse {
 		sigma2 := stdDev * stdDev
 		kurtosis = m4 / (sigma2 * sigma2)
 	}
+	// Tukey フェンス外れ値件数: `x < p25 - 1.5*IQR` または `x > p75 + 1.5*IQR` を数える。
+	// sorted は昇順なので、下側フェンス未満の連続する接頭部と、
+	// 上側フェンス超の連続する末尾部を線形にカウントするだけで済む（追加ソート不要）。
+	// IQR = 0（定数入力・単一要素）では lower == p25 == p75 == upper となり、
+	// 「未満」「超」の厳格比較なので 0 件を返す（既存 σ=0 退化規約と整合）。
+	iqr := p75 - p25
+	lowerFence := p25 - 1.5*iqr
+	upperFence := p75 + 1.5*iqr
+	outlierCount := 0
+	for _, v := range sorted {
+		if v < lowerFence {
+			outlierCount++
+			continue
+		}
+		// sorted は昇順なので、lowerFence 以上に達したら以降は下側外れ値ではない。
+		// 上側外れ値のみをチェックすればよい。
+		if v > upperFence {
+			outlierCount++
+		}
+	}
 	return AggregateResponse{
 		Count:         n,
 		Sum:           sum,
@@ -405,7 +440,7 @@ func computeAggregate(values []float64) AggregateResponse {
 		Median:        median,
 		P25:           p25,
 		P75:           p75,
-		IQR:           p75 - p25,
+		IQR:           iqr,
 		P90:           percentile(sorted, 90),
 		P95:           percentile(sorted, 95),
 		P99:           percentile(sorted, 99),
@@ -414,6 +449,7 @@ func computeAggregate(values []float64) AggregateResponse {
 		Kurtosis:      kurtosis,
 		MAD:           mad,
 		TrimmedMean10: trimmedMean(sorted, 0.1),
+		OutlierCount:  outlierCount,
 	}
 }
 
