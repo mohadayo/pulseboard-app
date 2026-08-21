@@ -32,6 +32,8 @@ graph TB
 | **Metrics Worker** | Go | 8001 | Statistical aggregation engine — computes sum, avg, min, max, range, variance/std_dev/cv, skewness/kurtosis, mad, quartiles (p25/p75/iqr), and p50/p90/p95/p99 |
 | **Dashboard BFF** | TypeScript (Express) | 8002 | Backend-for-Frontend — dashboard-oriented metric views and summaries |
 
+> 詳細な設計判断・サービス間の相互作用・拡張ポイントは [`docs/architecture.md`](docs/architecture.md) を参照。
+
 ## Quick Start
 
 ### Prerequisites
