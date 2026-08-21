@@ -340,14 +340,6 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  test-typescript-lint:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: services/dashboard-bff
-    steps:
-      - uses: actions/checkout@v4
-
   docker-build:
     runs-on: ubuntu-latest
     needs: [test-python, test-go, test-typescript]
