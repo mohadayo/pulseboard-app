@@ -77,6 +77,7 @@ make down
 | `GET` | `/api/v1/metrics/by_day` | 保持中メトリクスを UTC 日付 (YYYY-MM-DD) でビニングした日次時系列カウント（`?name=` / `?since=` / `?until=`） |
 | `GET` | `/api/v1/metrics/by_hour_of_day` | 保持中メトリクスを UTC 時刻 ("00"〜"23") でビニングした周期集計（`?name=` / `?since=` / `?until=`） |
 | `GET` | `/api/v1/metrics/by_week` | 保持中メトリクスを ISO 週 (YYYY-Www) でビニングした週次時系列カウント（`?name=` / `?since=` / `?until=`） |
+| `GET` | `/api/v1/metrics/by_year` | 保持中メトリクスを暦年 (YYYY) でビニングした年次時系列カウント（`?name=` / `?since=` / `?until=`） |
 | `DELETE` | `/api/v1/metrics` | Delete all metrics across all names |
 | `DELETE` | `/api/v1/metrics/{name}` | Delete all entries for a metric |
 
