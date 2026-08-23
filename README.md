@@ -77,6 +77,8 @@ make down
 | `GET` | `/api/v1/metrics/by_day` | 保持中メトリクスを UTC 日付 (YYYY-MM-DD) でビニングした日次時系列カウント（`?name=` / `?since=` / `?until=`） |
 | `GET` | `/api/v1/metrics/by_hour_of_day` | 保持中メトリクスを UTC 時刻 ("00"〜"23") でビニングした周期集計（`?name=` / `?since=` / `?until=`） |
 | `GET` | `/api/v1/metrics/by_week` | 保持中メトリクスを ISO 週 (YYYY-Www) でビニングした週次時系列カウント（`?name=` / `?since=` / `?until=`） |
+| `GET` | `/api/v1/metrics/by_day_of_week` | 保持中メトリクスを UTC 曜日 ("1" 月曜〜"7" 日曜) でビニングした周期集計（`?name=` / `?since=` / `?until=`） |
+| `GET` | `/api/v1/metrics/by_month` | 保持中メトリクスを月 (YYYY-MM) でビニングした月次時系列カウント（`?name=` / `?since=` / `?until=`） |
 | `DELETE` | `/api/v1/metrics` | Delete all metrics across all names |
 | `DELETE` | `/api/v1/metrics/{name}` | Delete all entries for a metric |
 
@@ -186,6 +188,8 @@ The response includes `count`, `sum`, `avg`, `min`, `max`, `range` (= max − mi
 | `GET` | `/api/v1/dashboard/metrics/{name}` | Get metrics by name |
 | `GET` | `/api/v1/dashboard/metrics/{name}/latest` | 指定 name の最新 1 件だけを返す軽量エンドポイント（リアルタイム表示・状態バッジ用、データ無しは `404`） |
 | `GET` | `/api/v1/dashboard/metrics/{name}/stats` | 指定 name の集計統計（count/min/max/sum/avg/p50/p95/p99/latest）|
+| `GET` | `/api/v1/dashboard/metrics/{name}/timeseries` | 指定 name を `?bucket_seconds=`（既定 `60`、1〜86400）幅のバケットにビニングし、バケットごとの count/min/max/avg/variance/std_dev/cv/skewness/kurtosis/p50/p95/p99 を返す（`?since=` / `?until=` ISO8601 で絞り込み可、観測の無いバケットは含めない） |
+| `GET` | `/api/v1/dashboard/metrics/{name}/tags` | 指定 name で観測された distinct な tag キーと、各キーごとの distinct 値一覧を返す（フィルタドロップダウンの populate / faceted search 用途、`?since=` / `?until=` ISO8601 で絞り込み可） |
 | `DELETE` | `/api/v1/dashboard/metrics` | 全メトリクスを破棄（運用時のクリーンアップ用） |
 | `DELETE` | `/api/v1/dashboard/metrics/{name}` | 名前指定で破棄。`?since=` / `?until=` (ISO 8601) で `recorded_at` の範囲を絞り込んだ部分削除も可能（該当なしは `404`） |
 
