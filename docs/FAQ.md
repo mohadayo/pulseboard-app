@@ -99,8 +99,9 @@ CI と同じコマンドを流してください。
 ### Q. API リファレンスはどこにありますか？
 
 `README.md` の "API リファレンス" 節に代表的なエンドポイントを表で
-掲載しています。詳細な OpenAPI 定義はサービスごとに
-`services/*/openapi.yaml` に配置しています。
+掲載しています。各エンドポイントの詳細な挙動は
+`services/api-gateway/app.py` と `services/api-gateway/tests/`
+の実装・テストコードを併せてご確認ください。
 
 ## セキュリティ・運用について
 
