@@ -350,3 +350,14 @@ jobs:
 ```
 
 </details>
+
+## Documentation
+
+`docs/` 配下に、開発・運用・障害対応のためのドキュメントを整理しています。
+
+- [`docs/architecture.md`](docs/architecture.md) — システム構成・サービス間の相互作用・拡張ポイントの設計解説
+- [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — 運用ランブック（起動・停止・スケール・デプロイ手順）
+- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — 障害発生時の観測・切り分け・復旧手順
+- [`docs/FAQ.md`](docs/FAQ.md) — よくある質問と回答
+
+コントリビュートのガイドは [`CONTRIBUTING.md`](CONTRIBUTING.md)、コミュニティ規範は [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)、セキュリティ報告は [`SECURITY.md`](SECURITY.md) を参照してください。
