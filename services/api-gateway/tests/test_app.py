@@ -218,6 +218,55 @@ def test_get_latest_metric_not_found():
     assert resp.status_code == 404
 
 
+def test_get_latest_metric_since_until_filter():
+    from urllib.parse import quote
+    a = client.post("/api/v1/metrics", json={"name": "lat", "value": 10.0}).json()
+    b = client.post("/api/v1/metrics", json={"name": "lat", "value": 20.0}).json()
+    c = client.post("/api/v1/metrics", json={"name": "lat", "value": 30.0}).json()
+    a_ts = quote(a["recorded_at"], safe="")
+    b_ts = quote(b["recorded_at"], safe="")
+    c_ts = quote(c["recorded_at"], safe="")
+    # フィルタ無し: 末尾 (c) が最新
+    resp = client.get("/api/v1/metrics/lat/latest")
+    assert resp.status_code == 200
+    assert resp.json()["value"] == 30.0
+    # until=b まで: b が最新（c は窓外）
+    resp = client.get(f"/api/v1/metrics/lat/latest?until={b_ts}")
+    assert resp.status_code == 200
+    assert resp.json()["value"] == 20.0
+    # since=c 以降: c のみ
+    resp = client.get(f"/api/v1/metrics/lat/latest?since={c_ts}")
+    assert resp.status_code == 200
+    assert resp.json()["value"] == 30.0
+    # since=a, until=c は全件のうち末尾 (c)
+    resp = client.get(f"/api/v1/metrics/lat/latest?since={a_ts}&until={c_ts}")
+    assert resp.status_code == 200
+    assert resp.json()["value"] == 30.0
+
+
+def test_get_latest_metric_empty_window_returns_404():
+    # データはあるが範囲指定で 0 件のときは 404（名前自体が無い場合とは別メッセージ）
+    client.post("/api/v1/metrics", json={"name": "lat", "value": 1.0})
+    resp = client.get("/api/v1/metrics/lat/latest?since=2099-01-01T00:00:00Z")
+    assert resp.status_code == 404
+    assert "in the given window" in resp.json()["detail"]
+
+
+def test_get_latest_metric_invalid_since_rejected():
+    client.post("/api/v1/metrics", json={"name": "lat", "value": 1.0})
+    resp = client.get("/api/v1/metrics/lat/latest?since=not-a-date")
+    assert resp.status_code == 400
+
+
+def test_get_latest_metric_since_after_until_rejected():
+    client.post("/api/v1/metrics", json={"name": "lat", "value": 1.0})
+    resp = client.get(
+        "/api/v1/metrics/lat/latest"
+        "?since=2099-01-02T00:00:00Z&until=2099-01-01T00:00:00Z"
+    )
+    assert resp.status_code == 400
+
+
 def test_delete_metrics():
     client.post("/api/v1/metrics", json={"name": "temp", "value": 36})
     resp = client.delete("/api/v1/metrics/temp")
