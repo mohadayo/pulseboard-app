@@ -944,6 +944,89 @@ def metrics_by_month(
     }
 
 
+@app.get("/api/v1/metrics/by_quarter")
+def metrics_by_quarter(
+    name: Optional[str] = Query(
+        default=None,
+        description="メトリクス名の完全一致フィルタ。未指定なら全メトリクス横断で集計",
+    ),
+    since: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at >= since のレコードのみ集計",
+    ),
+    until: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at <= until のレコードのみ集計",
+    ),
+):
+    """保持中メトリクスを暦四半期 (YYYY-Qn) でビニングし、四半期次時系列カウントを返す。
+
+    `/api/v1/metrics/by_month` (12 点/年) と `/api/v1/metrics/by_year` (1 点/年)
+    の中間解像度を埋めるエンドポイント。数年スパンでの月次ダッシュボードは
+    5 年 × 12 = 60 点超で読みにくく、年次だと 1 年 1 点で四半期の季節性
+    (Q4 集中など) が可視化できない。財務・営業レポートは四半期粒度が業務標準
+    であり、その用途を 1 リクエストで賄える。
+
+    バケットキーは `recorded_at` を UTC 正規化し、年 + 四半期番号を
+    `"YYYY-Qn"` に整形した文字列（例: `"2026-Q1"`, `"2026-Q4"`）。
+    四半期番号は `(month - 1) // 3 + 1` で算出する:
+    1〜3 月 → Q1、4〜6 月 → Q2、7〜9 月 → Q3、10〜12 月 → Q4。
+    `Q1 < Q2 < Q3 < Q4` は lex 順で成り立つため、`"YYYY-Qn"` は lex 昇順 =
+    カレンダー四半期昇順を保ち、追加のソートキー変換は不要。
+    populated-only: 母集団 0 の四半期は返さない（`by_day` / `by_month` /
+    `by_year` と同じ規約）。破損した recorded_at (パース不能) は集計対象外
+    （`_apply_time_filter` と同じ防御）。
+
+    レジストレーション位置: `/{metric_name}` ルートより前に置く必要がある
+    (FastAPI は登録順マッチで、後置だと `metric_name="by_quarter"` として
+    捕捉される)。既存 `/count` / `/names` / `/by_day` / `/by_hour_of_day` /
+    `/by_week` / `/by_day_of_week` / `/by_month` / `/by_year` と同じ規約。
+    """
+    since_dt, until_dt = _parse_since_until(since, until)
+
+    with _store_lock:
+        if name is not None:
+            entries = metrics_store.get(name)
+            snapshot: list[dict] = list(entries) if entries else []
+        else:
+            snapshot = []
+            for _n, ents in metrics_store.items():
+                snapshot.extend(ents)
+
+    filtered = _apply_time_filter(snapshot, since_dt, until_dt)
+
+    counts: dict[str, int] = {}
+    total = 0
+    for m in filtered:
+        raw_ts = m.get("recorded_at")
+        if not isinstance(raw_ts, str):
+            continue
+        try:
+            dt = datetime.fromisoformat(raw_ts)
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        quarter_num = (dt.month - 1) // 3 + 1
+        quarter = f"{dt.year:04d}-Q{quarter_num}"
+        counts[quarter] = counts.get(quarter, 0) + 1
+        total += 1
+
+    # YYYY-Qn (n=1..4) は lex 順 = カレンダー四半期順のため sorted で十分。
+    by_quarter = [{"quarter": q, "count": counts[q]} for q in sorted(counts.keys())]
+    logger.info(
+        "by_quarter requested: total=%d distinct_quarters=%d (name=%s since=%s until=%s)",
+        total, len(by_quarter), name, since, until,
+    )
+    return {
+        "total": total,
+        "distinct_quarters": len(by_quarter),
+        "by_quarter": by_quarter,
+    }
+
+
 @app.get("/api/v1/metrics/by_year")
 def metrics_by_year(
     name: Optional[str] = Query(
