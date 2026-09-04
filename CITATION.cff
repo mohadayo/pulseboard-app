@@ -1,0 +1,31 @@
+# Citation File Format (CFF) v1.2.0
+# https://citation-file-format.github.io/
+#
+# GitHub がこのファイルを解釈し、リポジトリページに "Cite this repository"
+# ボタンを自動表示する。APA / BibTeX 形式の引用文字列がワンクリックで取得できる。
+cff-version: 1.2.0
+message: "If you use PulseBoard in academic work, a technical blog, or a presentation, please cite it using the metadata below."
+title: PulseBoard
+abstract: >-
+  Real-time metrics dashboard platform built with a microservices architecture.
+  Collects, aggregates, and visualizes system metrics through three specialized
+  services: a Python (FastAPI) API Gateway, a Go metrics-worker for statistical
+  aggregation, and a TypeScript (Express) dashboard BFF.
+type: software
+authors:
+  - alias: mohadayo
+    name: moha
+repository-code: "https://github.com/mohadayo/pulseboard-app"
+url: "https://github.com/mohadayo/pulseboard-app"
+license: MIT
+keywords:
+  - microservices
+  - metrics
+  - dashboard
+  - real-time
+  - observability
+  - fastapi
+  - go
+  - typescript
+  - express
+date-released: "2026-01-01"
