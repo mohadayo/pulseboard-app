@@ -2,12 +2,17 @@ import {
   parseOffsetParam,
   parseBucketSecondsParam,
   parseIsoDateTime,
+  parseSummaryLimit,
   filterByRecordedAt,
   bucketByTime,
   validateTags,
+  percentile,
+  computeStats,
   TAG_KEY_MAX_LENGTH,
   TAG_VALUE_MAX_LENGTH,
   TAG_MAX_KEYS,
+  MAX_SUMMARY_LIMIT,
+  DEFAULT_SUMMARY_LIMIT,
 } from "../src/index";
 
 // このファイルは `src/index.ts` から export されている純粋ヘルパー関数の
@@ -464,5 +469,265 @@ describe("validateTags (additional cases)", () => {
     }
     const r = validateTags(boundary);
     expect(r.ok).toBe(true);
+  });
+});
+
+describe("percentile", () => {
+  // 線形補間パーセンタイル。上流 api-gateway の `_percentile` と式を統一しており、
+  // 空配列 / 単一要素のショートサーキットと rank = (pct/100)*(n-1) の分岐
+  // （整数落ち / 補間）を境界値でロックダウンする。
+  // ここでは endpoint 経由の `app.test.ts` と重複しない、退化ケースと
+  // 補間計算の直接検証に絞る。
+
+  it("returns 0 for an empty array", () => {
+    expect(percentile([], 50)).toBe(0);
+  });
+
+  it("returns 0 for an empty array regardless of pct (0 / 100)", () => {
+    expect(percentile([], 0)).toBe(0);
+    expect(percentile([], 100)).toBe(0);
+  });
+
+  it("returns the sole value for a single-element array", () => {
+    // 単一要素のショートサーキット: pct に関わらず sortedValues[0] を返す。
+    expect(percentile([42], 0)).toBe(42);
+    expect(percentile([42], 50)).toBe(42);
+    expect(percentile([42], 99)).toBe(42);
+  });
+
+  it("returns the exact element when rank is an integer (5 elements, p50)", () => {
+    // n=5, pct=50 → rank = 0.5 * 4 = 2.0 → sortedValues[2] = 3
+    expect(percentile([1, 2, 3, 4, 5], 50)).toBe(3);
+  });
+
+  it("returns the first element for pct=0 (rank=0)", () => {
+    expect(percentile([1, 2, 3, 4, 5], 0)).toBe(1);
+  });
+
+  it("returns the last element for pct=100 (rank=n-1)", () => {
+    expect(percentile([1, 2, 3, 4, 5], 100)).toBe(5);
+  });
+
+  it("interpolates linearly when rank is fractional (5 elements, p95)", () => {
+    // n=5, pct=95 → rank = 0.95 * 4 = 3.8
+    // lower=3, upper=4, weight=0.8 → 4*(1-0.8) + 5*0.8 = 0.8 + 4.0 = 4.8
+    expect(percentile([1, 2, 3, 4, 5], 95)).toBeCloseTo(4.8, 10);
+  });
+
+  it("interpolates linearly when rank is fractional (5 elements, p99)", () => {
+    // n=5, pct=99 → rank = 0.99 * 4 = 3.96
+    // lower=3, upper=4, weight=0.96 → 4*0.04 + 5*0.96 = 0.16 + 4.80 = 4.96
+    expect(percentile([1, 2, 3, 4, 5], 99)).toBeCloseTo(4.96, 10);
+  });
+
+  it("computes p50 as the midpoint for an even-length array (linear interp)", () => {
+    // n=4, pct=50 → rank = 0.5 * 3 = 1.5
+    // lower=1, upper=2, weight=0.5 → 2*0.5 + 3*0.5 = 2.5
+    expect(percentile([1, 2, 3, 4], 50)).toBeCloseTo(2.5, 10);
+  });
+
+  it("returns constant value for a constant-valued input at any pct", () => {
+    // 定数入力ではどの pct でも同じ値を返す（min == max）。
+    expect(percentile([7, 7, 7, 7], 0)).toBe(7);
+    expect(percentile([7, 7, 7, 7], 50)).toBe(7);
+    expect(percentile([7, 7, 7, 7], 100)).toBe(7);
+  });
+});
+
+describe("computeStats", () => {
+  // `computeStats` は count / min / max / sum / avg / variance / std_dev / cv /
+  // skewness / kurtosis / p50/p95/p99 / latest / latest_recorded_at /
+  // first_recorded_at をまとめて返す。式は上流 api-gateway (Python) と
+  // metrics-worker (Go) と統一しており、退化ケースの規約
+  // (`count === 1` や定数入力で variance/std_dev/cv/skewness/kurtosis が 0)
+  // を直接ロックダウンする。metrics は時系列順（POST 受理順）を前提とし、
+  // `latest` は末尾、`first_recorded_at` は先頭の記録時刻を採用する。
+
+  const mkMetric = (value: number, recorded_at: string) => ({
+    name: "cpu",
+    value,
+    recorded_at,
+  });
+
+  it("handles a single observation (count=1 → variance/std_dev/cv/skewness/kurtosis all 0)", () => {
+    const stats = computeStats("cpu", [mkMetric(42, "2026-01-01T00:00:00.000Z")]);
+    expect(stats.name).toBe("cpu");
+    expect(stats.count).toBe(1);
+    expect(stats.min).toBe(42);
+    expect(stats.max).toBe(42);
+    expect(stats.sum).toBe(42);
+    expect(stats.avg).toBe(42);
+    // count=1 では差分が 0 で variance/std_dev も 0（ゼロ除算にはならない）。
+    expect(stats.variance).toBe(0);
+    expect(stats.std_dev).toBe(0);
+    // std_dev=0 のとき cv/skewness/kurtosis は定義不能なので 0 を返す規約。
+    expect(stats.cv).toBe(0);
+    expect(stats.skewness).toBe(0);
+    expect(stats.kurtosis).toBe(0);
+    // p50/p95/p99 は単一要素なので全て同じ値。
+    expect(stats.p50).toBe(42);
+    expect(stats.p95).toBe(42);
+    expect(stats.p99).toBe(42);
+    expect(stats.latest).toBe(42);
+    expect(stats.latest_recorded_at).toBe("2026-01-01T00:00:00.000Z");
+    expect(stats.first_recorded_at).toBe("2026-01-01T00:00:00.000Z");
+  });
+
+  it("handles constant-value input (variance=0, cv=0, skewness=0, kurtosis=0)", () => {
+    // 定数入力では variance/std_dev/cv/skewness/kurtosis が全て 0。
+    // std_dev=0 の防御が cv/skewness/kurtosis で共通に効いていることを確認する。
+    const stats = computeStats("cpu", [
+      mkMetric(7, "2026-01-01T00:00:00.000Z"),
+      mkMetric(7, "2026-01-01T00:00:01.000Z"),
+      mkMetric(7, "2026-01-01T00:00:02.000Z"),
+    ]);
+    expect(stats.count).toBe(3);
+    expect(stats.min).toBe(7);
+    expect(stats.max).toBe(7);
+    expect(stats.sum).toBe(21);
+    expect(stats.avg).toBe(7);
+    expect(stats.variance).toBe(0);
+    expect(stats.std_dev).toBe(0);
+    expect(stats.cv).toBe(0);
+    expect(stats.skewness).toBe(0);
+    expect(stats.kurtosis).toBe(0);
+    // 定数入力なので p50/p95/p99 も全て同じ値。
+    expect(stats.p50).toBe(7);
+    expect(stats.p95).toBe(7);
+    expect(stats.p99).toBe(7);
+  });
+
+  it("computes standard case [10, 20, 30, 40, 50] correctly (avg=30, variance=200)", () => {
+    // 手計算: avg=30, Σ(x-μ)²=(400+100+0+100+400)=1000, variance=1000/5=200
+    // std_dev=√200≈14.1421356, cv=std_dev/|30|≈0.4714
+    // 対称分布なので skewness=0、kurtosis は分布の尖りを反映する定数
+    // (m4=(160000+10000+0+10000+160000)/5=68000, kurtosis=68000/40000=1.7)
+    const metrics = [10, 20, 30, 40, 50].map((v, i) =>
+      mkMetric(v, `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z`)
+    );
+    const stats = computeStats("cpu", metrics);
+    expect(stats.count).toBe(5);
+    expect(stats.min).toBe(10);
+    expect(stats.max).toBe(50);
+    expect(stats.sum).toBe(150);
+    expect(stats.avg).toBe(30);
+    expect(stats.variance).toBeCloseTo(200, 10);
+    expect(stats.std_dev).toBeCloseTo(Math.sqrt(200), 10);
+    expect(stats.cv).toBeCloseTo(Math.sqrt(200) / 30, 10);
+    // 完全対称分布なので歪度は 0（浮動小数点誤差の範囲）。
+    expect(stats.skewness).toBeCloseTo(0, 10);
+    expect(stats.kurtosis).toBeCloseTo(1.7, 10);
+    // 線形補間: rank = (95/100)*4 = 3.8 → 40*0.2 + 50*0.8 = 48
+    expect(stats.p50).toBe(30);
+    expect(stats.p95).toBeCloseTo(48, 10);
+    expect(stats.p99).toBeCloseTo(49.6, 10);
+  });
+
+  it("uses head record for first_recorded_at and tail for latest / latest_recorded_at", () => {
+    // metrics は POST 受理順を前提とするため、末尾が最新・先頭が最古。
+    // ここでは意図的に「値の大小と時系列順序が一致しない」ケースを組んで、
+    // latest が「値の最大」ではなく「時系列の末尾」を指すことを明確化する。
+    const stats = computeStats("cpu", [
+      mkMetric(99, "2026-01-01T00:00:00.000Z"), // 先頭・値は最大
+      mkMetric(50, "2026-01-01T00:00:01.000Z"),
+      mkMetric(1, "2026-01-01T00:00:02.000Z"), // 末尾・値は最小
+    ]);
+    expect(stats.first_recorded_at).toBe("2026-01-01T00:00:00.000Z");
+    expect(stats.latest).toBe(1);
+    expect(stats.latest_recorded_at).toBe("2026-01-01T00:00:02.000Z");
+    // min/max は値ベースなので順序に依存しない。
+    expect(stats.min).toBe(1);
+    expect(stats.max).toBe(99);
+  });
+
+  it("handles negative values correctly (min/max/avg reflect sign)", () => {
+    // 負値を含むケース。sum/avg は符号を保持し、min は最小の負値、max は最大の正値。
+    const stats = computeStats("cpu", [
+      mkMetric(-10, "2026-01-01T00:00:00.000Z"),
+      mkMetric(0, "2026-01-01T00:00:01.000Z"),
+      mkMetric(10, "2026-01-01T00:00:02.000Z"),
+    ]);
+    expect(stats.min).toBe(-10);
+    expect(stats.max).toBe(10);
+    expect(stats.sum).toBe(0);
+    expect(stats.avg).toBe(0);
+    // avg=0 なので cv は定義不能 → 0 を返す規約。
+    expect(stats.cv).toBe(0);
+    // 対称なので skewness=0。
+    expect(stats.skewness).toBeCloseTo(0, 10);
+  });
+});
+
+describe("parseSummaryLimit", () => {
+  // `?limit=` のバリデーション。undefined は defaultLimit、それ以外は
+  // 純粋な正の整数文字列 (1〜maxLimit) のみ受理。それ以外は null を返す
+  // （呼び出し側が 400 を返す責務）。非文字列型（配列・オブジェクト）と
+  // 上限境界を直接ロックダウンする。
+
+  const DEFAULT = DEFAULT_SUMMARY_LIMIT; // 50
+  const MAX = MAX_SUMMARY_LIMIT; // 500
+
+  it("returns the default when input is undefined", () => {
+    expect(parseSummaryLimit(undefined, DEFAULT, MAX)).toBe(DEFAULT);
+  });
+
+  it("returns null for empty string (defaultLimit does not apply)", () => {
+    // undefined と "" は明確に区別する（後者は「渡されたが空」という不正入力）。
+    expect(parseSummaryLimit("", DEFAULT, MAX)).toBeNull();
+  });
+
+  it("parses a positive integer string", () => {
+    expect(parseSummaryLimit("10", DEFAULT, MAX)).toBe(10);
+  });
+
+  it("accepts the lower boundary 1", () => {
+    expect(parseSummaryLimit("1", DEFAULT, MAX)).toBe(1);
+  });
+
+  it("accepts the upper boundary maxLimit", () => {
+    expect(parseSummaryLimit(String(MAX), DEFAULT, MAX)).toBe(MAX);
+  });
+
+  it("rejects 0 (below lower boundary)", () => {
+    expect(parseSummaryLimit("0", DEFAULT, MAX)).toBeNull();
+  });
+
+  it("rejects maxLimit + 1 (above upper boundary)", () => {
+    expect(parseSummaryLimit(String(MAX + 1), DEFAULT, MAX)).toBeNull();
+  });
+
+  it("rejects negative integer strings", () => {
+    // 正の整数のみ受理する厳格な正規表現なので "-1" は非マッチで null。
+    expect(parseSummaryLimit("-1", DEFAULT, MAX)).toBeNull();
+  });
+
+  it("rejects decimal strings like '10.5'", () => {
+    expect(parseSummaryLimit("10.5", DEFAULT, MAX)).toBeNull();
+  });
+
+  it("rejects non-numeric strings", () => {
+    expect(parseSummaryLimit("abc", DEFAULT, MAX)).toBeNull();
+  });
+
+  it("rejects strings with leading whitespace (strict integer regex)", () => {
+    expect(parseSummaryLimit(" 10", DEFAULT, MAX)).toBeNull();
+  });
+
+  it("rejects array input (defensive against qs parsed queries)", () => {
+    // express の req.query は string | string[] | qs.ParsedQs 形式のため、
+    // 配列やオブジェクトが渡り得る。単一スカラのみ受理する契約を守る。
+    expect(parseSummaryLimit(["10"], DEFAULT, MAX)).toBeNull();
+  });
+
+  it("rejects plain object input", () => {
+    expect(parseSummaryLimit({ v: "10" }, DEFAULT, MAX)).toBeNull();
+  });
+
+  it("respects a custom defaultLimit and maxLimit pair", () => {
+    // 呼び出し側が別の default/max を渡すケース（将来別 endpoint で再利用しても
+    // 引数越しにパラメータ化できることを確認）。
+    expect(parseSummaryLimit(undefined, 10, 100)).toBe(10);
+    expect(parseSummaryLimit("100", 10, 100)).toBe(100);
+    expect(parseSummaryLimit("101", 10, 100)).toBeNull();
   });
 });
