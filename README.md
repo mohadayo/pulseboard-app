@@ -159,6 +159,9 @@ The response includes `count`, `sum`, `avg`, `min`, `max`, `range` (= max − mi
 「外れ値の count」を返す補完的な頑健統計。p95 悪化が分布シフトか単発スパイクかの
 切り分けに使う。単一要素・定数入力では IQR=0 でフェンスが 1 点に縮退するため 0 を返す）。
 
+> 各統計量の **定義式・母集団/標本の別・縮退時の挙動・実務での使い分け** は
+> [`docs/METRICS.md`](docs/METRICS.md) にリファレンスとしてまとめている。
+
 **Hardening / DoS 対策:**
 
 - リクエストボディ全体は `MAX_AGGREGATE_BODY_BYTES`（既定 `1048576` = 1 MiB）を超えると
@@ -357,6 +360,7 @@ jobs:
 `docs/` 配下に、開発・運用・障害対応のためのドキュメントを整理しています。
 
 - [`docs/architecture.md`](docs/architecture.md) — システム構成・サービス間の相互作用・拡張ポイントの設計解説
+- [`docs/METRICS.md`](docs/METRICS.md) — 集計統計量（`std_dev` / `cv` / `iqr` / `mad` / `skewness` / `kurtosis` / `p25`〜`p99` / `outlier_count` 等）の定義式・縮退時の挙動・実務での使い分け
 - [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — 運用ランブック（起動・停止・スケール・デプロイ手順）
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — 障害発生時の観測・切り分け・復旧手順
 - [`docs/FAQ.md`](docs/FAQ.md) — よくある質問と回答
