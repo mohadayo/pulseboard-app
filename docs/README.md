@@ -8,6 +8,10 @@
 
 - **[architecture.md](./architecture.md)** — 3 サービス（Python API / Go ワーカー / TypeScript BFF）の責務、サービス間通信、データフロー、コンテナ構成を整理したドキュメント。「どこを触るとどこに影響するか」を掴みたい時の起点。
 
+### 統計量リファレンス
+
+- **[METRICS.md](./METRICS.md)** — `metrics-worker` の `POST /api/v1/aggregate` が返す各統計量（`avg` / `std_dev` / `cv` / `iqr` / `mad` / `skewness` / `kurtosis` / `p25`〜`p99` / `outlier_count` 等）の定義式・母集団/標本の別・単一/定数入力での縮退挙動・実務での使い分けを集約したリファレンス。`p95` 悪化時に何を併読すべきか等のシナリオ別ガイドも含む。
+
 ### 設定・運用
 
 - **[CONFIGURATION.md](./CONFIGURATION.md)** — 環境変数・設定ファイル・シークレット管理など、各サービスをどう設定するかのリファレンス。ローカル開発・ステージング・本番で切り替える必要のあるパラメータを一覧化。
