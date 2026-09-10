@@ -13,18 +13,24 @@ Pulseboard アプリで使用するすべての環境変数を、サービス単
 | `METRICS_DEFAULT_LIMIT`         | api-gateway             | 上限   |
 | `METRICS_MAX_LIMIT`             | api-gateway             | 上限   |
 | `WORKER_PORT`                   | metrics-worker          | ポート |
+| `LOG_LEVEL`                     | metrics-worker          | 動作   |
 | `MAX_AGGREGATE_BODY_BYTES`      | metrics-worker          | 上限   |
 | `MAX_AGGREGATE_VALUES`          | metrics-worker          | 上限   |
 | `WORKER_READ_HEADER_TIMEOUT`    | metrics-worker          | セキュリティ |
 | `WORKER_READ_TIMEOUT`           | metrics-worker          | セキュリティ |
 | `WORKER_WRITE_TIMEOUT`          | metrics-worker          | セキュリティ |
 | `WORKER_IDLE_TIMEOUT`           | metrics-worker          | セキュリティ |
+| `WORKER_SHUTDOWN_TIMEOUT`       | metrics-worker          | 運用   |
 | `BFF_PORT`                      | dashboard-bff           | ポート |
 | `API_GATEWAY_URL`               | dashboard-bff           | 接続先 |
 | `WORKER_URL`                    | dashboard-bff           | 接続先 |
 | `MAX_DASHBOARD_METRICS`         | dashboard-bff           | 上限   |
 | `MAX_REQUEST_BODY`              | dashboard-bff           | 上限   |
 | `MAX_SUMMARY_LIMIT`             | dashboard-bff           | 上限   |
+| `TAG_KEY_MAX_LENGTH`            | dashboard-bff           | 上限   |
+| `TAG_VALUE_MAX_LENGTH`          | dashboard-bff           | 上限   |
+| `TAG_MAX_KEYS`                  | dashboard-bff           | 上限   |
+| `SHUTDOWN_TIMEOUT_MS`           | dashboard-bff           | 運用   |
 
 ## 2. api-gateway
 
@@ -38,12 +44,14 @@ Pulseboard アプリで使用するすべての環境変数を、サービス単
 ## 3. metrics-worker
 
 - **`WORKER_PORT`** — 待ち受けポート番号。既定 `8001`。
+- **`LOG_LEVEL`** — ログレベル。既定 `INFO`。`DEBUG` を指定した場合のみヘルスチェック等の高頻度・低価値イベントも出力する（大文字小文字は無視）。api-gateway 側の `LOG_LEVEL` と運用を揃える目的で用意している。既定 (`INFO`) では `/health` の呼び出しログは抑制される。
 - **`MAX_AGGREGATE_BODY_BYTES`** — `/api/v1/aggregate` のリクエストボディ最大バイト数。**`0` 以下で無効化**。既定 `1048576` (1 MiB)。
 - **`MAX_AGGREGATE_VALUES`** — `values` 配列の最大要素数。**`0` 以下で無効化**。既定 `10000`。
 - **`WORKER_READ_HEADER_TIMEOUT`** — HTTP リクエストヘッダを読み終えるまでの秒数上限。既定 `5`。**Slowloris 系の攻撃対策**として短めが推奨。
 - **`WORKER_READ_TIMEOUT`** — リクエスト全体を読み終えるまでの秒数上限。既定 `15`。
 - **`WORKER_WRITE_TIMEOUT`** — レスポンス書き出しの秒数上限。既定 `15`。
 - **`WORKER_IDLE_TIMEOUT`** — Keep-Alive 接続のアイドル秒数上限。既定 `60`。
+- **`WORKER_SHUTDOWN_TIMEOUT`** — SIGTERM/SIGINT 受信後、進行中リクエストの完了を待つ秒数上限。超過時は強制終了する。既定 `30`。Kubernetes の `terminationGracePeriodSeconds` より短めに設定するのが安全（SIGKILL 前に確実に終了できる）。
 
 > セキュリティ推奨: `WORKER_READ_HEADER_TIMEOUT` は本番でも 10 秒以下、`WORKER_READ_TIMEOUT` は 30 秒以下に留めることを推奨します。長すぎるとリソース占有攻撃を許容しやすくなります。
 
@@ -55,6 +63,10 @@ Pulseboard アプリで使用するすべての環境変数を、サービス単
 - **`MAX_DASHBOARD_METRICS`** — ダッシュボードストアの保持件数上限。超過分は FIFO で破棄。**`0` 以下で無制限**。既定 `10000`。
 - **`MAX_REQUEST_BODY`** — `express.json` のリクエストボディ上限。文字列指定 (`100kb` / `1mb` 等)。既定 `100kb`。
 - **`MAX_SUMMARY_LIMIT`** — `GET /api/v1/dashboard/summary` の `limit` 上限。既定 `500`。
+- **`TAG_KEY_MAX_LENGTH`** — `POST /api/v1/dashboard/metrics` の `tags` キーの最大文字数。既定 `64`。超過は 400 で拒否。
+- **`TAG_VALUE_MAX_LENGTH`** — `POST /api/v1/dashboard/metrics` の `tags` 値の最大文字数。既定 `256`。超過は 400 で拒否。
+- **`TAG_MAX_KEYS`** — `POST /api/v1/dashboard/metrics` の `tags` オブジェクトの最大キー数。既定 `16`。超過は 400 で拒否。
+- **`SHUTDOWN_TIMEOUT_MS`** — SIGTERM/SIGINT 受信後、`server.close` の完了を待つ最大ミリ秒。超過時は `process.exit(1)` で強制終了する。既定 `10000` (10 秒)。Kubernetes の既定 `terminationGracePeriodSeconds` (30 秒) より短めに設定し、SIGKILL より先に確実に終了させる。
 
 ## 5. セキュリティ推奨設定まとめ
 
@@ -67,6 +79,7 @@ Pulseboard アプリで使用するすべての環境変数を、サービス単
 | `MAX_AGGREGATE_BODY_BYTES`      | ユースケースに合わせ最小値へ。**必ず有効化**   |
 | `MAX_AGGREGATE_VALUES`          | ユースケースに合わせ最小値へ                   |
 | `MAX_REQUEST_BODY`              | 数百 KB 以内に抑えるのが原則                   |
+| `TAG_MAX_KEYS` / `TAG_*_LENGTH` | 業務要件に合わせ最小値へ。ペイロード肥大化を抑止 |
 
 ## 6. 変更ポリシー
 
