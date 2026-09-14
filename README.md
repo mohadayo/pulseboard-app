@@ -168,7 +168,7 @@ The response includes `count`, `sum`, `avg`, `min`, `max`, `range` (= max − mi
   `413 Request Entity Too Large` で拒否される。
 - `values` 配列の要素数は `MAX_AGGREGATE_VALUES`（既定 `10000`）を超えると `413` で拒否される。
 - HTTP サーバには `WORKER_READ_HEADER_TIMEOUT`（既定 `5` 秒）、`WORKER_READ_TIMEOUT`（既定 `15` 秒）、
-  `WORKER_WRITE_TIMEOUT`（既定 `15` 秒）、`WORKER_IDLE_TIMEOUT`（既定 `60` 秒）が設定される
+  `WORKER_WRITE_TIMEOUT`（既定 `15` 秒)、`WORKER_IDLE_TIMEOUT`（既定 `60` 秒）が設定される
   （Slowloris 等の遅延接続攻撃対策）。
 - いずれの上限も値を `0` 以下に設定すると無効化できる（テスト用途）。
 
@@ -209,7 +209,7 @@ GET `/api/v1/dashboard/summary` の件数制御：
 
 - `?limit=` で返却件数を指定可能（範囲 `1`〜`MAX_SUMMARY_LIMIT`、既定 `50`、後方互換）
 - `MAX_SUMMARY_LIMIT`（既定 `500`、環境変数で上書き可）を超えると `400`
-- 整数以外(`10.5` / `abc` / 配列)や `0` 以下も `400` で拒否
+- 整数以外（`10.5` / `abc` / 配列）や `0` 以下も `400` で拒否
 - レスポンスに `limit` フィールドが含まれ、要求された件数が明示される
 
 ```bash
