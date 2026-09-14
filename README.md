@@ -108,7 +108,7 @@ curl -X POST http://localhost:8000/api/v1/metrics \
 
 - `name` は 1〜128 文字の文字列
 - `value` は有限な数値のみ受け付け、`+Infinity` / `-Infinity` / `NaN` は `422` で拒否される
-  （JSON 仕様上 `1e500` は許容されるが Python では `inf` に解釈されるため、集計や直近値の破壊を防ぐ目的）
+  (JSON 仕様上 `1e500` は許容されるが Python では `inf` に解釈されるため、集計や直近値の破壊を防ぐ目的）
 
 **Get aggregate stats for a metric:**
 
@@ -360,6 +360,7 @@ jobs:
 `docs/` 配下に、開発・運用・障害対応のためのドキュメントを整理しています。
 
 - [`docs/architecture.md`](docs/architecture.md) — システム構成・サービス間の相互作用・拡張ポイントの設計解説
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — 全サービスの環境変数の意味・既定値・チューニング指針を集約した設定リファレンス（`.env.example` の詳細版）
 - [`docs/METRICS.md`](docs/METRICS.md) — 集計統計量（`std_dev` / `cv` / `iqr` / `mad` / `skewness` / `kurtosis` / `p25`〜`p99` / `outlier_count` 等）の定義式・縮退時の挙動・実務での使い分け
 - [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — 運用ランブック（起動・停止・スケール・デプロイ手順）
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — 障害発生時の観測・切り分け・復旧手順
