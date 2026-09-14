@@ -108,7 +108,7 @@ curl -X POST http://localhost:8000/api/v1/metrics \
 
 - `name` は 1〜128 文字の文字列
 - `value` は有限な数値のみ受け付け、`+Infinity` / `-Infinity` / `NaN` は `422` で拒否される
-  （JSON 仕様上 `1e500` は許容されるが Python では `inf` に解釈されるため、集計や直近値の破壊を防ぐ目的）
+  (JSON 仕様上 `1e500` は許容されるが Python では `inf` に解釈されるため、集計や直近値の破壊を防ぐ目的）
 
 **Get aggregate stats for a metric:**
 
@@ -207,7 +207,7 @@ POST `/api/v1/dashboard/metrics` の入力バリデーション：
 
 GET `/api/v1/dashboard/summary` の件数制御：
 
-- `?limit=` で返却件数を指定可能(範囲 `1`〜`MAX_SUMMARY_LIMIT`、既定 `50`、後方互換）
+- `?limit=` で返却件数を指定可能（範囲 `1`〜`MAX_SUMMARY_LIMIT`、既定 `50`、後方互換）
 - `MAX_SUMMARY_LIMIT`（既定 `500`、環境変数で上書き可）を超えると `400`
 - 整数以外（`10.5` / `abc` / 配列）や `0` 以下も `400` で拒否
 - レスポンスに `limit` フィールドが含まれ、要求された件数が明示される
