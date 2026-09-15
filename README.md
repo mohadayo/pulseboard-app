@@ -286,14 +286,24 @@ See [`.env.example`](.env.example) for all available configuration options.
 
 ## CI/CD
 
-GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every push and PR to `main`:
-1. Python tests (flake8 lint + pytest)
-2. Go tests (go vet + go test)
-3. TypeScript tests (jest)
-4. Docker Compose build verification (all tests がパスした後に実行)
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) が `main` への push / PR 毎に走る。ジョブ全体には次のハードニングが適用されている:
+
+- `permissions: contents: read` — ワークフロー既定権限を最小化(OpenSSF Scorecard 準拠、依存 Action 侵害時の blast radius を縮小)
+- `concurrency` グループ (`${{ github.workflow }}-${{ github.ref }}` + `cancel-in-progress: true`) — 同一 ref で新しいランが起動したら古いランをキャンセルし、実行枠と時間の無駄を抑制
+- 各ジョブに `timeout-minutes`(テスト系 10 分、`docker-build` 20 分) — 想定外のハングを早期打ち切り
+- 各 setup-* Action の依存キャッシュ有効化(pip / Go modules / npm) — 再実行時のセットアップ時間を短縮
+
+ジョブ構成:
+
+1. **test-python**: `pip install -r requirements.txt flake8` → `flake8 --max-line-length=120 --exclude=__pycache__ .` → `pytest -v`
+2. **test-go**: `go vet ./...` → `go test -v ./...`
+3. **test-typescript**: `npm ci` → `npx tsc --noEmit`(型検査) → `npm test`(jest)
+4. **docker-build**: 上記 3 ジョブが全通した後に `docker compose build` を実行(`needs` 依存で連鎖)
 
 <details>
 <summary>CI Workflow Content</summary>
+
+> 実ファイル: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)(コメントを含む正本はこちら。README のスニペットは snapshot であり、drift を防ぐため CI を変更した際はこの節も追従させること)
 
 ```yaml
 name: CI
@@ -304,9 +314,26 @@ on:
   pull_request:
     branches: [main]
 
+# ワークフロー全体のデフォルト権限を最小化する（OpenSSF Scorecard 準拠）。
+# 本 CI はコード取得 (checkout) と静的解析 / テスト実行 / ローカル docker build のみで、
+# Issue / PR / Deployment / Pages / Packages への書き込みは一切行わない。
+# そのため既定を `contents: read` に絞り、依存 Action が侵害された際の
+# blast radius を最小化する。将来ジョブごとに追加権限が必要になった場合は
+# job レベルの `permissions:` で override する。
+permissions:
+  contents: read
+
+# 同一ワークフロー・同一 ref (PR ブランチや main) で新しいジョブが起動したら、
+# 進行中の古いジョブをキャンセルする。PR に短時間で連続 push した場合の
+# 実行枠・実行時間の無駄を削減する。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-python:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: services/api-gateway
@@ -315,12 +342,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: 'pip'
+          cache-dependency-path: services/api-gateway/requirements.txt
       - run: pip install -r requirements.txt flake8
       - run: flake8 --max-line-length=120 --exclude=__pycache__ .
       - run: pytest -v
 
   test-go:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: services/metrics-worker
@@ -329,11 +359,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+          cache: true
+          cache-dependency-path: services/metrics-worker/go.sum
       - run: go vet ./...
       - run: go test -v ./...
 
   test-typescript:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: services/dashboard-bff
@@ -342,11 +375,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: 'npm'
+          cache-dependency-path: services/dashboard-bff/package-lock.json
       - run: npm ci
+      - run: npx tsc --noEmit
       - run: npm test
 
   docker-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [test-python, test-go, test-typescript]
     steps:
       - uses: actions/checkout@v4
