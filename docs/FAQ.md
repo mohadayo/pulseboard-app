@@ -31,12 +31,14 @@ PulseBoard (`api-gateway` / `metrics-worker` / `dashboard-bff`) の利用・
 
 ```sh
 cp .env.example .env
-docker compose up -d
+docker compose up -d --build
 ```
 
-これで 3 サービスすべてが立ち上がります。UI は
-`http://localhost:3000` で確認できます。
-詳細な手順は [../README.md](../README.md) を参照してください。
+これで 3 サービスすべてが立ち上がります。本リポジトリはこの 3 つの
+API サービスのみで構成されておりフロントエンド UI は同梱していないため、
+起動確認は `make health`（3 サービスの `/health` をまとめて叩く）や、
+各サービスへの直接の `curl`（例: `curl http://localhost:8000/health`）で
+行ってください。詳細な手順は [../README.md](../README.md) を参照してください。
 
 ### Q. 使用する言語バージョンは？
 
@@ -51,11 +53,13 @@ CI (`.github/workflows/ci.yml`) と揃えるため、必ず `.tool-versions`
 
 ### Q. どのポートを使いますか？
 
-- `api-gateway`: 8000
-- `metrics-worker`: 9000 (メトリクス export 用)
-- `dashboard-bff`: 3000
+- `api-gateway`: `8000`（`API_GATEWAY_PORT`）
+- `metrics-worker`: `8001`（`WORKER_PORT`）
+- `dashboard-bff`: `8002`（`BFF_PORT`）
 
-競合したときの対処は [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) を参照。
+各既定値は [`.env.example`](../.env.example) の対応する環境変数で
+上書きできます。競合したときの対処は
+[TROUBLESHOOTING.md](./TROUBLESHOOTING.md) を参照。
 
 ## 開発について
 
