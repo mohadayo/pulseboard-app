@@ -1,0 +1,61 @@
+# GitHub Actions ワークフロー静的解析
+#
+# 目的:
+#   `.github/workflows/` 配下の YAML ファイルを actionlint で検証し、
+#   構文エラー・非推奨のセマンティクス・shellcheck 由来の `run:` 内
+#   シェルスクリプト誤りを PR / push 時点で早期に検知する。
+#
+# 設計上のポイント:
+#   - ワークフロー YAML の変更を含む push / PR、および手動実行時のみ
+#     起動し、ランナー使用量を最小化する。
+#   - rhysd/actionlint の公式配布スクリプトからバイナリを取得する
+#     ため、サードパーティ Action への依存を避けている。
+#   - actionlint は内部で shellcheck を活用するため、
+#     `run:` ブロック内のシェルスクリプトも併せて検査される。
+#   - 権限は `contents: read` のみに限定。
+#   - `concurrency` により同一 ref での多重実行を抑止。
+
+name: actionlint
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/**'
+      - '.github/actionlint.yml'
+      - '.github/actionlint.yaml'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - '.github/actionlint.yml'
+      - '.github/actionlint.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: actionlint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install actionlint
+        shell: bash
+        run: |
+          curl -sSLo download-actionlint.bash \
+            https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash
+          bash download-actionlint.bash
+          rm -f download-actionlint.bash
+
+      - name: Run actionlint
+        shell: bash
+        run: ./actionlint -color
