@@ -428,7 +428,7 @@ def test_get_metric_stats_single_value():
     assert data["count"] == 1
     assert data["min"] == data["max"] == data["avg"] == data["latest"] == 512.0
     # 単一値の場合、全パーセンタイルはその値と等しい
-    assert data["p50"] == data["p95"] == data["p99"] == 512.0
+    assert data["p50"] == data["p90"] == data["p95"] == data["p99"] == 512.0
 
 
 def test_get_metric_stats_not_found():
@@ -468,8 +468,54 @@ def test_get_metric_stats_percentiles_monotonic():
     for _ in range(10):
         client.post("/api/v1/metrics", json={"name": "flat", "value": 42.0})
     data = client.get("/api/v1/metrics/flat/stats").json()
-    assert data["p50"] == data["p95"] == data["p99"] == 42.0
+    assert data["p50"] == data["p90"] == data["p95"] == data["p99"] == 42.0
     assert data["min"] == data["max"] == 42.0
+
+
+def test_get_metric_stats_includes_p90_field():
+    # レスポンス JSON に p90 フィールドが含まれることを確認（消費側 API の保証）。
+    # metrics-worker の /api/v1/aggregate は既に p90 を露出しており、SLO 系
+    # ダッシュボードで p95 / p99 と併記されるため、api-gateway 側でも欠落させない。
+    for v in [10.0, 20.0, 30.0]:
+        client.post("/api/v1/metrics", json={"name": "cpu", "value": v})
+    data = client.get("/api/v1/metrics/cpu/stats").json()
+    assert "p90" in data
+
+
+def test_get_metric_stats_p90_exact_value_five_points():
+    # values=[1,2,3,4,5]:
+    #   p90: rank = 0.9 * 4 = 3.6 → values[3]*(1-0.6) + values[4]*0.6
+    #                             = 4 * 0.4 + 5 * 0.6 = 1.6 + 3.0 = 4.6
+    for v in [3.0, 1.0, 5.0, 2.0, 4.0]:  # 順不同で投入
+        client.post("/api/v1/metrics", json={"name": "lat", "value": v})
+    data = client.get("/api/v1/metrics/lat/stats").json()
+    assert data["p90"] == pytest.approx(4.6)
+
+
+def test_get_metric_stats_p90_ordering_holds():
+    # 単調な系列では p50 <= p90 <= p95 <= p99 <= max が常に成り立つ。
+    for v in [1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0, 100.0]:
+        client.post("/api/v1/metrics", json={"name": "asc", "value": v})
+    data = client.get("/api/v1/metrics/asc/stats").json()
+    assert data["p50"] <= data["p90"] <= data["p95"] <= data["p99"] <= data["max"]
+
+
+def test_get_metric_stats_p90_matches_percentile_definition_on_10_values():
+    # values=[1..10]:
+    #   p90: rank = 0.9 * 9 = 8.1 → values[8]*(1-0.1) + values[9]*0.1
+    #                             = 9 * 0.9 + 10 * 0.1 = 8.1 + 1.0 = 9.1
+    for v in range(1, 11):
+        client.post("/api/v1/metrics", json={"name": "ten", "value": float(v)})
+    data = client.get("/api/v1/metrics/ten/stats").json()
+    assert data["p90"] == pytest.approx(9.1)
+
+
+def test_get_metric_stats_p90_constant_values():
+    # 全て同じ値だけの場合、p90 も同値になる（p50/p95/p99 と同じ規約）。
+    for _ in range(5):
+        client.post("/api/v1/metrics", json={"name": "flat", "value": 7.5})
+    data = client.get("/api/v1/metrics/flat/stats").json()
+    assert data["p90"] == 7.5
 
 
 def test_get_metric_stats_std_dev_single_value_is_zero():
