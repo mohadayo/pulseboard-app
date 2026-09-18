@@ -420,6 +420,11 @@ def get_metric_stats(
         "skewness": skewness,
         "kurtosis": kurtosis,
         "p50": _percentile(sorted_values, 50),
+        # p90 は SLO 系ダッシュボードで p95 / p99 と併記されることが多い代表的な
+        # パーセンタイルだが、これまで本エンドポイントでは欠落していた
+        # (`metrics-worker` の `/api/v1/aggregate` は既に露出済み)。
+        # 3 サービス間で同じ線形補間 (`_percentile`) を使い定義を揃える。
+        "p90": _percentile(sorted_values, 90),
         "p95": _percentile(sorted_values, 95),
         "p99": _percentile(sorted_values, 99),
         "latest": snapshot[-1]["value"],

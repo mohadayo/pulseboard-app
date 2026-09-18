@@ -71,7 +71,7 @@ make down
 | `GET` | `/api/v1/metrics` | List metrics（`?name=` / `?since=` / `?until=` ISO 8601 / `?limit=` / `?offset=`、レスポンスに `total` / `limit` / `offset`） |
 | `GET` | `/api/v1/metrics/{name}` | Get all entries for a metric |
 | `GET` | `/api/v1/metrics/{name}/latest` | Get latest value for a metric |
-| `GET` | `/api/v1/metrics/{name}/stats` | Aggregate stats for a metric (count/min/max/sum/avg/latest) |
+| `GET` | `/api/v1/metrics/{name}/stats` | Aggregate stats for a metric (count/min/max/sum/avg/variance/std_dev/cv/skewness/kurtosis/p50/p90/p95/p99/latest) |
 | `GET` | `/api/v1/metrics/names` | 保持中の distinct な metric 名一覧を `{name, count, latest_recorded_at}` 形式で `name` 昇順に返す（`?q=` で大文字小文字無視の部分一致絞り込み） |
 | `GET` | `/api/v1/metrics/count` | 保持中の総件数と `by_name` サマリーを返す軽量エンドポイント（`?since=` / `?until=` ISO 8601 で時間フィルタ） |
 | `GET` | `/api/v1/metrics/by_day` | 保持中メトリクスを UTC 日付 (YYYY-MM-DD) でビニングした日次時系列カウント（`?name=` / `?since=` / `?until=`） |
@@ -168,7 +168,7 @@ The response includes `count`, `sum`, `avg`, `min`, `max`, `range` (= max − mi
   `413 Request Entity Too Large` で拒否される。
 - `values` 配列の要素数は `MAX_AGGREGATE_VALUES`（既定 `10000`）を超えると `413` で拒否される。
 - HTTP サーバには `WORKER_READ_HEADER_TIMEOUT`（既定 `5` 秒）、`WORKER_READ_TIMEOUT`（既定 `15` 秒）、
-  `WORKER_WRITE_TIMEOUT`（既定 `15` 秒）、`WORKER_IDLE_TIMEOUT`（既定 `60` 秒）が設定される
+  `WORKER_WRITE_TIMEOUT`（既定 `15` 秒)、`WORKER_IDLE_TIMEOUT`（既定 `60` 秒）が設定される
   （Slowloris 等の遅延接続攻撃対策）。
 - いずれの上限も値を `0` 以下に設定すると無効化できる（テスト用途）。
 
