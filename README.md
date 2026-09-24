@@ -1,5 +1,7 @@
 # PulseBoard
 
+[![CI](https://github.com/mohadayo/pulseboard-app/actions/workflows/ci.yml/badge.svg)](https://github.com/mohadayo/pulseboard-app/actions/workflows/ci.yml) [![actionlint](https://github.com/mohadayo/pulseboard-app/actions/workflows/actionlint.yml/badge.svg)](https://github.com/mohadayo/pulseboard-app/actions/workflows/actionlint.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Python](https://img.shields.io/badge/python-3.12+-3776ab.svg?logo=python&logoColor=white)](services/) [![Go](https://img.shields.io/badge/go-1.22+-00add8.svg?logo=go&logoColor=white)](services/) [![TypeScript](https://img.shields.io/badge/typescript-node%2022-3178c6.svg?logo=typescript&logoColor=white)](services/)
+
 Real-time metrics dashboard platform built with a microservices architecture. Collect, aggregate, and visualize system metrics through three specialized services.
 
 ## Architecture
