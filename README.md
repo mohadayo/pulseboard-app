@@ -1,5 +1,7 @@
 # PulseBoard
 
+[![CI](https://github.com/mohadayo/pulseboard-app/actions/workflows/ci.yml/badge.svg)](https://github.com/mohadayo/pulseboard-app/actions/workflows/ci.yml) [![actionlint](https://github.com/mohadayo/pulseboard-app/actions/workflows/actionlint.yml/badge.svg)](https://github.com/mohadayo/pulseboard-app/actions/workflows/actionlint.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Python](https://img.shields.io/badge/python-3.12+-3776ab.svg?logo=python&logoColor=white)](services/) [![Go](https://img.shields.io/badge/go-1.22+-00add8.svg?logo=go&logoColor=white)](services/) [![TypeScript](https://img.shields.io/badge/typescript-node%2022-3178c6.svg?logo=typescript&logoColor=white)](services/)
+
 Real-time metrics dashboard platform built with a microservices architecture. Collect, aggregate, and visualize system metrics through three specialized services.
 
 ## Architecture
@@ -233,7 +235,7 @@ curl "http://localhost:8002/api/v1/dashboard/metrics/names?since=$(date -u -d '1
 curl "http://localhost:8002/api/v1/dashboard/metrics/names?since=2026-06-01T00:00:00Z&until=2026-06-11T00:00:00Z"
 ```
 
-`since` / `until` の片方または両方を指定すると、`recorded_at` がパースできないレコードは集計対象外（窓内外を判定できないため）になる。フィルタを一切指定しない場合は従来通り全レコードを集計する。`since` が `until` より大きい場合は `400`、ISO8601 として解釈できない値も `400`。
+`since` / `until` の片方または両方を指定すると、`recorded_at` がパースできないレコードは集計対象外(窓内外を判定できないため）になる。フィルタを一切指定しない場合は従来通り全レコードを集計する。`since` が `until` より大きい場合は `400`、ISO8601 として解釈できない値も `400`。
 
 ## Development
 
