@@ -235,7 +235,7 @@ curl "http://localhost:8002/api/v1/dashboard/metrics/names?since=$(date -u -d '1
 curl "http://localhost:8002/api/v1/dashboard/metrics/names?since=2026-06-01T00:00:00Z&until=2026-06-11T00:00:00Z"
 ```
 
-`since` / `until` の片方または両方を指定すると、`recorded_at` がパースできないレコードは集計対象外(窓内外を判定できないため）になる。フィルタを一切指定しない場合は従来通り全レコードを集計する。`since` が `until` より大きい場合は `400`、ISO8601 として解釈できない値も `400`。
+`since` / `until` の片方または両方を指定すると、`recorded_at` がパースできないレコードは集計対象外（窓内外を判定できないため）になる。フィルタを一切指定しない場合は従来通り全レコードを集計する。`since` が `until` より大きい場合は `400`、ISO8601 として解釈できない値も `400`。
 
 ## Development
 
