@@ -1,0 +1,79 @@
+# CodeQL 静的セキュリティ解析
+#
+# 目的:
+#   Python (services/api-gateway) / TypeScript (services/dashboard-bff) /
+#   Go (services/metrics-worker) の 3 サービスに対して CodeQL による SAST を
+#   PR / push / 定期実行の各タイミングで走らせ、CWE 系の脆弱性
+#   (SQL Injection / XSS / Path Traversal 等) を早期検知する。
+#
+# 設計上のポイント:
+#   - `matrix` で言語ごとにジョブを並列化し、失敗した言語のみが赤くなる。
+#   - `security-extended` クエリスイートは既定 (`security-and-quality`) より
+#     広範なセキュリティルールを含み、ノイズの多い品質ルールを除外する。
+#   - 権限は `security-events: write`, `actions: read`, `contents: read` のみ。
+#     コードスキャン結果を Security タブに書き込むために必要な最小権限。
+#   - 週次スケジュール実行 (日曜 03:00 UTC) で、既存 CI が回らない期間の
+#     新規 CVE 該当ルールにも追随する。
+#   - `concurrency` により同一 ref の多重実行を抑止しランナー使用量を節約。
+#   - 既存 CI (`ci.yml`) / actionlint (`actionlint.yml`) とは役割が独立。
+#
+# 参考: https://docs.github.com/en/code-security/code-scanning
+
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # 毎週日曜 03:00 UTC (Asia/Tokyo で日曜 12:00) に定期スキャン
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: go
+            build-mode: autobuild
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-extended
+
+      - name: Set up Go (Go analysis only)
+        if: matrix.language == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: false
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
