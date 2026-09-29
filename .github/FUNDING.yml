@@ -1,0 +1,19 @@
+# これらは支援方法として GitHub の各リポジトリで表示される情報を設定するファイルです。
+# 詳細: https://docs.github.com/ja/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+#
+# 有効化したい行のコメント (#) を外し、必要に応じてユーザー名や URL を書き換えてください。
+# 現時点ではボタンを表示させないよう、すべてコメントアウトした状態にしています。
+
+# github: [mohadayo]                # GitHub Sponsors のユーザー名 (最大 4 個まで配列で指定可)
+# patreon: # Patreon のユーザー名
+# open_collective: # Open Collective の団体名
+# ko_fi: # Ko-fi のユーザー名
+# tidelift: # Tidelift のプラットフォーム名/パッケージ (例: npm/package-name)
+# community_bridge: # LFX Crowdfunding のプロジェクト名
+# liberapay: # Liberapay のユーザー名
+# issuehunt: # IssueHunt のユーザー名
+# lfx_crowdfunding: # LFX Crowdfunding のプロジェクト名
+# polar: # Polar のユーザー名
+# buy_me_a_coffee: # Buy Me a Coffee のユーザー名
+# thanks_dev: # thanks.dev のユーザー名
+# custom: # 任意の URL (最大 4 個まで配列で指定可、例: ["https://example.com/donate"])
