@@ -472,7 +472,10 @@ func main() {
 		IdleTimeout:       envSeconds("WORKER_IDLE_TIMEOUT", 60*time.Second),
 	}
 
-	quit := make(chan os.Signal, 1)
+	// buffer 2: 1 件目でグレースフルシャットダウンを開始し、2 件目以降は
+	// force-exit goroutine に拾わせる。K8s の preStop / SIGTERM と、
+	// 続けざまに届く SIGINT 等を取りこぼさない。
+	quit := make(chan os.Signal, 2)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
@@ -482,8 +485,25 @@ func main() {
 		}
 	}()
 
-	<-quit
-	logger.Println("Shutting down metrics-worker gracefully...")
+	sig := <-quit
+	logger.Printf("Received %v, shutting down metrics-worker gracefully...", sig)
+
+	// グレースフルシャットダウン中に 2 回目のシグナルが届いた場合は
+	// 即時終了する。長時間稼働の集計リクエストが WORKER_SHUTDOWN_TIMEOUT
+	// を使い切っている間に K8s eviction / 運用者による Ctrl-C 連打が来ても
+	// プロセスを確実に落とし、SIGKILL (grace period 超過) を待たずに済むように。
+	//
+	// 128 + シグナル番号 の慣例（SIGINT=130, SIGTERM=143）に合わせ、
+	// 強制終了の原因となったシグナルを exit code に反映する。
+	go func() {
+		sig2 := <-quit
+		logger.Printf("Received second %v during shutdown, forcing immediate exit", sig2)
+		exitCode := 1
+		if s, ok := sig2.(syscall.Signal); ok {
+			exitCode = 128 + int(s)
+		}
+		os.Exit(exitCode)
+	}()
 
 	shutdownTimeout := envSeconds("WORKER_SHUTDOWN_TIMEOUT", 30*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
