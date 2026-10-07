@@ -788,6 +788,24 @@ _WEEKDAY_NAMES = {
     "7": "Sun",
 }
 
+# `strftime("%m")` の月番号 ("01"..."12") と、UI 表示用の 3 文字略称の対応表。
+# 1 月始まりで 12 月が最後。lex 昇順 ("01"..."12") = カレンダー月順を保つため、
+# 月単位でのソート時に追加変換は不要。
+_MONTH_NAMES = {
+    "01": "Jan",
+    "02": "Feb",
+    "03": "Mar",
+    "04": "Apr",
+    "05": "May",
+    "06": "Jun",
+    "07": "Jul",
+    "08": "Aug",
+    "09": "Sep",
+    "10": "Oct",
+    "11": "Nov",
+    "12": "Dec",
+}
+
 
 @app.get("/api/v1/metrics/by_day_of_week")
 def metrics_by_day_of_week(
@@ -946,6 +964,99 @@ def metrics_by_month(
         "total": total,
         "distinct_months": len(by_month),
         "by_month": by_month,
+    }
+
+
+@app.get("/api/v1/metrics/by_month_of_year")
+def metrics_by_month_of_year(
+    name: Optional[str] = Query(
+        default=None,
+        description="メトリクス名の完全一致フィルタ。未指定なら全メトリクス横断で集計",
+    ),
+    since: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at >= since のレコードのみ集計",
+    ),
+    until: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at <= until のレコードのみ集計",
+    ),
+):
+    """保持中メトリクスを UTC 月 ("01" 1 月〜"12" 12 月) でビニングし、1〜12 月順の周期カウントを返す。
+
+    `/api/v1/metrics/by_hour_of_day` が「1 日のうちどの時間帯に負荷が集中するか」、
+    `/api/v1/metrics/by_day_of_week` が「1 週のうちどの曜日に集中するか」を返す
+    周期軸であるのに対し、本エンドポイントは「1 年のうちどの月に集中するか」と
+    いう季節性 (seasonality) を 1 リクエストで返す。EC の繁忙期 (Q4 集中) や
+    会計年度末 (3 月末) のバッチ集中、休暇シーズン (7-8 月) の落ち込みなど、
+    年単位の周期パターンを可視化するのに使う想定。
+
+    `/api/v1/metrics/by_month` との違い:
+    - `/by_month`: 線形時系列（例: `2024-06`, `2025-06`, `2026-06` が別バケット）。
+      月次トレンドを時間軸に沿って追う。
+    - `/by_month_of_year`: 周期軸（複数年の同月を 1 バケットに畳み込む。
+      例: `2024-06` / `2025-06` / `2026-06` → すべて `"06"`）。年を跨いだ季節性を
+      可視化する。
+
+    バケットキーは `recorded_at` を UTC 正規化して `strftime("%m")` で得られる
+    2 桁ゼロ詰め月番号 (`"01"` = 1 月 〜 `"12"` = 12 月) の文字列。lex 昇順 =
+    カレンダー月順を保つため、追加のソートキー変換は不要。各行には `month`
+    (月番号) に加え、UI 側での存在チェック不要ラベル用に `month_name`
+    ("Jan"..."Dec") を付ける（`by_day_of_week` の `weekday_name` と同じ規約）。
+    populated-only: 母集団 0 の月は返さない（`by_hour_of_day` / `by_day_of_week` /
+    `by_day` と同じ規約）。破損した recorded_at (パース不能) は集計対象外
+    （`_apply_time_filter` と同じ防御）。
+
+    レジストレーション位置: `/{metric_name}` ルートより前に置く必要がある
+    (FastAPI は登録順マッチで、後置だと `metric_name="by_month_of_year"` として
+    捕捉される)。既存 `/count` / `/names` / `/by_day` / `/by_hour_of_day` /
+    `/by_week` / `/by_day_of_week` / `/by_month` と同じ規約。
+    """
+    since_dt, until_dt = _parse_since_until(since, until)
+
+    with _store_lock:
+        if name is not None:
+            entries = metrics_store.get(name)
+            snapshot: list[dict] = list(entries) if entries else []
+        else:
+            snapshot = []
+            for _n, ents in metrics_store.items():
+                snapshot.extend(ents)
+
+    filtered = _apply_time_filter(snapshot, since_dt, until_dt)
+
+    counts: dict[str, int] = {}
+    total = 0
+    for m in filtered:
+        raw_ts = m.get("recorded_at")
+        if not isinstance(raw_ts, str):
+            continue
+        try:
+            dt = datetime.fromisoformat(raw_ts)
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        month = dt.strftime("%m")  # "01" (Jan) 〜 "12" (Dec)
+        counts[month] = counts.get(month, 0) + 1
+        total += 1
+
+    # 2 桁ゼロ詰め月番号 ("01"..."12") は lex 順 = カレンダー月順のため sorted で十分。
+    by_month_of_year = [
+        {"month": mo, "month_name": _MONTH_NAMES[mo], "count": counts[mo]}
+        for mo in sorted(counts.keys())
+    ]
+    logger.info(
+        "by_month_of_year requested: total=%d distinct_months_of_year=%d "
+        "(name=%s since=%s until=%s)",
+        total, len(by_month_of_year), name, since, until,
+    )
+    return {
+        "total": total,
+        "distinct_months_of_year": len(by_month_of_year),
+        "by_month_of_year": by_month_of_year,
     }
 
 
