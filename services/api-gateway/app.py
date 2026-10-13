@@ -407,11 +407,14 @@ def get_metric_stats(
         kurtosis = m4 / (std_dev ** 4)
     else:
         kurtosis = 0.0
+    p25 = _percentile(sorted_values, 25)
+    p75 = _percentile(sorted_values, 75)
     stats = {
         "name": metric_name,
         "count": count,
         "min": sorted_values[0],
         "max": sorted_values[-1],
+        "range": sorted_values[-1] - sorted_values[0],
         "sum": total,
         "avg": avg,
         "variance": variance,
@@ -419,7 +422,10 @@ def get_metric_stats(
         "cv": cv,
         "skewness": skewness,
         "kurtosis": kurtosis,
+        "p25": p25,
         "p50": _percentile(sorted_values, 50),
+        "p75": p75,
+        "iqr": p75 - p25,
         # p90 は SLO 系ダッシュボードで p95 / p99 と併記されることが多い代表的な
         # パーセンタイルだが、これまで本エンドポイントでは欠落していた
         # (`metrics-worker` の `/api/v1/aggregate` は既に露出済み)。
