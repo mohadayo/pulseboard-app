@@ -881,6 +881,58 @@ def test_get_metric_stats_invalid_since_rejected():
     assert resp.status_code == 400
 
 
+def test_get_metric_stats_includes_range_field():
+    for v in [10.0, 20.0, 30.0]:
+        client.post("/api/v1/metrics", json={"name": "r", "value": v})
+    data = client.get("/api/v1/metrics/r/stats").json()
+    assert "range" in data
+    assert data["range"] == pytest.approx(20.0)
+
+
+def test_get_metric_stats_range_single_value_is_zero():
+    client.post("/api/v1/metrics", json={"name": "one", "value": 42.0})
+    data = client.get("/api/v1/metrics/one/stats").json()
+    assert data["range"] == 0.0
+
+
+def test_get_metric_stats_includes_p25_p75_iqr_fields():
+    for v in [10.0, 20.0, 30.0]:
+        client.post("/api/v1/metrics", json={"name": "q", "value": v})
+    data = client.get("/api/v1/metrics/q/stats").json()
+    assert "p25" in data
+    assert "p75" in data
+    assert "iqr" in data
+
+
+def test_get_metric_stats_p25_p75_exact_values_five_points():
+    # values=[1,2,3,4,5]:
+    #   p25: rank = 0.25*4 = 1.0 -> values[1] = 2.0
+    #   p75: rank = 0.75*4 = 3.0 -> values[3] = 4.0
+    #   iqr = p75 - p25 = 2.0
+    for v in [3.0, 1.0, 5.0, 2.0, 4.0]:
+        client.post("/api/v1/metrics", json={"name": "q", "value": v})
+    data = client.get("/api/v1/metrics/q/stats").json()
+    assert data["p25"] == pytest.approx(2.0)
+    assert data["p75"] == pytest.approx(4.0)
+    assert data["iqr"] == pytest.approx(2.0)
+
+
+def test_get_metric_stats_iqr_single_value_is_zero():
+    client.post("/api/v1/metrics", json={"name": "one", "value": 7.0})
+    data = client.get("/api/v1/metrics/one/stats").json()
+    assert data["p25"] == data["p75"]
+    assert data["iqr"] == 0.0
+
+
+def test_get_metric_stats_percentile_ordering_includes_p25_p75():
+    # p25 <= p50 <= p75 の順序は常に成立
+    for v in [1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0, 100.0]:
+        client.post("/api/v1/metrics", json={"name": "asc", "value": v})
+    data = client.get("/api/v1/metrics/asc/stats").json()
+    assert data["p25"] <= data["p50"] <= data["p75"]
+    assert data["iqr"] == pytest.approx(data["p75"] - data["p25"])
+
+
 # --- GET /api/v1/metrics/names ---
 
 def test_list_metric_names_empty():
