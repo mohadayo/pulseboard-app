@@ -1,0 +1,40 @@
+name: Dependency Review
+
+on:
+  pull_request:
+    branches: [main]
+
+# PR で追加された依存パッケージの既知脆弱性 (CVE) を GitHub Advisory DB に
+# 照合し、`fail-on-severity: high` 以上でワークフローを失敗させる。
+# `comment-summary-in-pr: on-failure` を指定することで、失敗時のみ PR に
+# 要約コメントを残す（毎回コメントだと通知ノイズになるため）。
+# 参考: https://github.com/actions/dependency-review-action
+
+permissions:
+  contents: read
+  # dependency-review-action が PR にサマリーコメントを投稿するために必要。
+  pull-requests: write
+
+# 同一 PR で短時間に push した場合、進行中の古いジョブをキャンセルして
+# 実行枠を節約する（他ワークフローと同じ運用）。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          # high / critical の脆弱性でワークフローを失敗させる。
+          # moderate 以下は要約表示のみでブロックはしない運用。
+          fail-on-severity: high
+          # 失敗時のみ PR にサマリーコメントを残す。
+          comment-summary-in-pr: on-failure
+          # 以下のライセンスは自動で不許可（必要に応じて追加/削除する）。
+          # OSI 承認済みで既存依存に支障が無いライセンスのみ許容する。
+          deny-licenses: AGPL-3.0, GPL-2.0, GPL-3.0
