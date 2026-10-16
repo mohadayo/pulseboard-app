@@ -1,0 +1,44 @@
+name: CI Auto-Fix
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+jobs:
+  auto-fix:
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Auto-fix CI failure
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            The GitHub Actions workflow "${{ github.event.workflow_run.name }}" (run ID: ${{ github.event.workflow_run.id }}) just failed on the default branch of ${{ github.repository }}.
+
+            Steps:
+            1. Get failure logs: gh run view ${{ github.event.workflow_run.id }} --log-failed
+            2. Analyze the root cause
+            3. Make the minimal fix needed
+            4. Create a new branch fix/ci-auto-$(date +%Y-%m-%d), commit and push
+            5. Create a PR explaining the root cause and changes
+            6. Enable auto-merge: gh pr merge --auto --squash <pr-number>
+               If auto-merge is not available, poll CI status (wait 60s, max 10 min) and merge with gh pr merge --squash when passed.
+
+            Rules:
+            - Only fix CI issues: workflow config, missing files, test bugs, permissions, service containers
+            - Make the smallest change possible
+            - If major refactoring is needed, skip and explain why
+            - NEVER merge a PR whose CI checks have not passed
+          claude_args: |
+            --model claude-sonnet-4-6
+            --allowedTools Bash,Read,Write,Edit,Glob,Grep
