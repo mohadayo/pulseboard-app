@@ -330,14 +330,43 @@ def _parse_since_until(
 
 
 @app.get("/api/v1/metrics/{metric_name}/latest")
-def get_latest_metric(metric_name: str):
+def get_latest_metric(
+    metric_name: str,
+    since: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at >= since のレコードに絞り込んで最新値を返す",
+    ),
+    until: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at <= until のレコードに絞り込んで最新値を返す",
+    ),
+):
+    """指定メトリクス名の最新レコードを返す。
+
+    `since`/`until` を指定すると、`recorded_at` がその範囲内のレコードに
+    絞り込んだうえで末尾（最新）を返す。`get_metric_stats` と同じ
+    `_parse_since_until` / `_apply_time_filter` を使い、`dashboard-bff` の
+    `GET /api/v1/dashboard/metrics/:name/latest` と挙動を揃える。
+    未指定時は従来どおり保持中の末尾レコードをそのまま返す。
+    """
+    since_dt, until_dt = _parse_since_until(since, until)
     with _store_lock:
         entries = metrics_store.get(metric_name)
-        latest = entries[-1] if entries else None
-    if latest is None:
+        snapshot = list(entries) if entries else []
+    if not snapshot:
         logger.warning("Metric not found: %s", metric_name)
         raise HTTPException(status_code=404, detail=f"No metrics found for '{metric_name}'")
-    return latest
+    filtered = _apply_time_filter(snapshot, since_dt, until_dt)
+    if not filtered:
+        logger.info(
+            "No metrics in window for '%s' (since=%s until=%s)",
+            metric_name, since, until,
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=f"No metrics found for '{metric_name}' in the given window",
+        )
+    return filtered[-1]
 
 
 @app.get("/api/v1/metrics/{metric_name}/stats")
