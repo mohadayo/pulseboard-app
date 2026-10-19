@@ -1,0 +1,57 @@
+# CITATION.cff のスキーマ検証
+#
+# 目的:
+#   ルート直下の `CITATION.cff` (Citation File Format 1.2.0) が
+#   スキーマ的に正しいかを push / PR 時点で検証する。
+#   既存の actionlint (YAML / Actions) / ci / codeql / dependency-review
+#   とは独立した軽量ジョブとして走り、引用メタデータ観点のみを担う。
+#
+# 設計上のポイント:
+#   - 公式ツールである `cffconvert` を Python 環境で実行し、`--validate`
+#     モードでスキーマ検証のみを行う (ネットワーク到達性に依存しない)。
+#   - 権限は `contents: read` のみに限定。
+#   - paths フィルタで CITATION.cff 自身とこのワークフロー変更時のみ発火。
+#   - `concurrency` により同一 ref の多重実行を抑止。
+#   - `timeout-minutes: 5` でハングを防止。
+
+name: validate-cff
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'CITATION.cff'
+      - '.github/workflows/validate-cff.yml'
+  pull_request:
+    paths:
+      - 'CITATION.cff'
+      - '.github/workflows/validate-cff.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-cff-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install cffconvert
+        run: python -m pip install --disable-pip-version-check "cffconvert==2.0.0"
+
+      - name: Validate CITATION.cff
+        run: cffconvert --infile CITATION.cff --validate
