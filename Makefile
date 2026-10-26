@@ -1,4 +1,4 @@
-.PHONY: help up down build test test-python test-go test-ts lint lint-python lint-go lint-ts ci logs health
+.PHONY: help up down build test test-python test-go test-ts lint lint-python lint-go lint-ts ci logs health clean
 
 .DEFAULT_GOAL := help
 
@@ -45,3 +45,18 @@ health:  ## 各サービスの /health エンドポイントを確認する
 	@echo "API Gateway:"; curl -s http://localhost:8000/health | python3 -m json.tool 2>/dev/null || echo "  not running"
 	@echo "Metrics Worker:"; curl -s http://localhost:8001/health | python3 -m json.tool 2>/dev/null || echo "  not running"
 	@echo "Dashboard BFF:"; curl -s http://localhost:8002/health | python3 -m json.tool 2>/dev/null || echo "  not running"
+
+clean:  ## 各言語のキャッシュ / ビルド生成物を一括削除する
+	@echo "==> Cleaning Python (services/api-gateway)"
+	@find services/api-gateway -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
+	@find services/api-gateway -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete 2>/dev/null || true
+	@rm -rf services/api-gateway/.pytest_cache services/api-gateway/.mypy_cache services/api-gateway/.ruff_cache services/api-gateway/htmlcov 2>/dev/null || true
+	@find services/api-gateway -maxdepth 2 -type d -name '*.egg-info' -prune -exec rm -rf {} + 2>/dev/null || true
+	@rm -f services/api-gateway/.coverage services/api-gateway/coverage.xml 2>/dev/null || true
+	@echo "==> Cleaning Go (services/metrics-worker)"
+	@find services/metrics-worker -maxdepth 2 -type f \( -name '*.test' -o -name '*.out' -o -name '*.prof' -o -name '*.pprof' \) -delete 2>/dev/null || true
+	@rm -f services/metrics-worker/coverage.out 2>/dev/null || true
+	@echo "==> Cleaning TypeScript (services/dashboard-bff)"
+	@rm -rf services/dashboard-bff/dist services/dashboard-bff/.jest-cache services/dashboard-bff/coverage 2>/dev/null || true
+	@find services/dashboard-bff -maxdepth 2 -type f -name '*.tsbuildinfo' -delete 2>/dev/null || true
+	@echo "Done. (node_modules / .venv / Docker リソースは対象外)"
