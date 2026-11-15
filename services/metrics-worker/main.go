@@ -179,6 +179,20 @@ func envSeconds(key string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
+// writeJSONError は `{"error": msg}` を application/json として返す。
+// 標準の http.Error は Content-Type を text/plain に固定してしまうため、
+// JSON ボディと Content-Type ヘッダが食い違い、クライアントの JSON パースや
+// api-gateway / dashboard-bff とのエラー形式の一貫性を損なう。nosniff も併せて付与する。
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
+		logger.Printf("Failed to write error response: %v", err)
+	}
+}
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	// /health は K8s probe / ロードバランサから高頻度に呼ばれるため、
 	// DEBUG レベルでのみ出力して既定運用ではノイズに埋もれないようにする。
@@ -194,7 +208,8 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 func aggregateHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -209,17 +224,17 @@ func aggregateHandler(w http.ResponseWriter, r *http.Request) {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
 			logger.Printf("Request body too large: %d > %d", mbe.Limit, maxAggregateBodyBytes)
-			http.Error(w, `{"error":"request body too large"}`, http.StatusRequestEntityTooLarge)
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return
 		}
 		logger.Printf("Invalid request body: %v", err)
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	if len(req.Values) == 0 {
 		logger.Println("Empty values array received")
-		http.Error(w, `{"error":"values array must not be empty"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "values array must not be empty")
 		return
 	}
 
@@ -228,7 +243,7 @@ func aggregateHandler(w http.ResponseWriter, r *http.Request) {
 			"Too many values: %d > %d",
 			len(req.Values), maxAggregateValues,
 		)
-		http.Error(w, `{"error":"values array too large"}`, http.StatusRequestEntityTooLarge)
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "values array too large")
 		return
 	}
 
@@ -236,7 +251,7 @@ func aggregateHandler(w http.ResponseWriter, r *http.Request) {
 	for i, v := range req.Values {
 		if math.IsInf(v, 0) || math.IsNaN(v) {
 			logger.Printf("Non-finite value at index %d", i)
-			http.Error(w, `{"error":"values must all be finite numbers"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "values must all be finite numbers")
 			return
 		}
 	}
@@ -248,10 +263,10 @@ func aggregateHandler(w http.ResponseWriter, r *http.Request) {
 	// エンコード前に検出して明示的に 422 を返す。
 	if result.hasNonFinite() {
 		logger.Printf("Aggregate produced a non-finite result (count=%d)", result.Count)
-		http.Error(
+		writeJSONError(
 			w,
-			`{"error":"aggregate result is not finite; input values may be out of representable range"}`,
 			http.StatusUnprocessableEntity,
+			"aggregate result is not finite; input values may be out of representable range",
 		)
 		return
 	}
