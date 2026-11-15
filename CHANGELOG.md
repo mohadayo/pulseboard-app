@@ -26,6 +26,7 @@
 ### Fixed
 
 - （バグ修正をここに記載）
+- metrics-worker: `/api/v1/aggregate` のエラー応答が JSON ボディなのに `Content-Type: text/plain` で返っていた問題を修正し、`application/json` + `X-Content-Type-Options: nosniff` で返すようにした。405 応答には `Allow: POST` を付与。
 
 ### Security
 
