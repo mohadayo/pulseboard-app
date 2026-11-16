@@ -29,6 +29,7 @@
 ### 開発・CI
 
 - **[CI.md](./CI.md)** — `.github/workflows/` 配下のワークフロー（`actionlint` / `ci` / `codeql`）の目的・トリガー・権限・timeout、`permissions: contents: read` と `concurrency.cancel-in-progress: true` の方針、新規ワークフロー追加時のチェックリスト、ローカル再現方法（`make ci`）を集約した一次リファレンス。CI 失敗の切り分け時や新規ワークフロー追加時の起点。
+- **[RELEASING.md](./RELEASING.md)** — 新しいバージョンを切るための手順書。SemVer によるバージョン番号の決定、`CHANGELOG.md` / `CITATION.cff` の更新、Git タグ発行、`.github/release.yml` を使った GitHub Release ノート生成、リリース後の後片付け、ホットフィックス運用までを 1 ページに集約。
 
 ## その他のリファレンス
 
