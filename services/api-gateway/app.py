@@ -553,6 +553,84 @@ def count_metrics(
     }
 
 
+@app.get("/api/v1/metrics/by_hour")
+def metrics_by_hour(
+    name: Optional[str] = Query(
+        default=None,
+        description="メトリクス名の完全一致フィルタ。未指定なら全メトリクス横断で集計",
+    ),
+    since: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at >= since のレコードのみ集計",
+    ),
+    until: Optional[str] = Query(
+        default=None,
+        description="ISO 8601 文字列。recorded_at <= until のレコードのみ集計",
+    ),
+):
+    """保持中メトリクスを UTC 時間 (YYYY-MM-DDTHH) でビニングし、時間次時系列カウントを返す。
+
+    `/api/v1/metrics/by_day` (日次線形) より細かい粒度を提供する。インシデント調査や
+    バーストトラフィックの可視化のように「直近数時間〜1 日で、どの時間にリクエストが
+    集中したか」を 1 リクエストで返す。`by_hour_of_day` は複数日を同じ時刻に畳み込む
+    周期軸である一方、本エンドポイントは発生日時を保ったまま時間粒度で時系列を返す。
+
+    バケットキーは `recorded_at` を UTC 正規化して `strftime("%Y-%m-%dT%H")` で
+    時間に丸めた文字列（例: `"2026-11-17T14"`）。ISO 8601 の年月日 + "T" + 2 桁ゼロ
+    詰め時刻のため、lex 昇順 = カレンダー時間昇順を保ち、追加のソートキー変換は不要。
+    populated-only: 母集団 0 の時間は返さない（`by_day` / `by_week` と同じ規約）。
+    破損した recorded_at (パース不能) は集計対象外（`_apply_time_filter` と同じ防御）。
+
+    レジストレーション位置: `/{metric_name}` ルートより前に置く必要がある
+    (FastAPI は登録順マッチで、後置だと `metric_name="by_hour"` として捕捉される)。
+    既存 `/count` / `/names` / `/by_day` / `/by_hour_of_day` / `/by_week` /
+    `/by_day_of_week` / `/by_month` / `/by_month_of_year` / `/by_quarter` / `/by_year`
+    と同じ規約。
+    """
+    since_dt, until_dt = _parse_since_until(since, until)
+
+    with _store_lock:
+        if name is not None:
+            entries = metrics_store.get(name)
+            snapshot: list[dict] = list(entries) if entries else []
+        else:
+            snapshot = []
+            for _n, ents in metrics_store.items():
+                snapshot.extend(ents)
+
+    filtered = _apply_time_filter(snapshot, since_dt, until_dt)
+
+    counts: dict[str, int] = {}
+    total = 0
+    for m in filtered:
+        raw_ts = m.get("recorded_at")
+        if not isinstance(raw_ts, str):
+            continue
+        try:
+            dt = datetime.fromisoformat(raw_ts)
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        hour = dt.strftime("%Y-%m-%dT%H")
+        counts[hour] = counts.get(hour, 0) + 1
+        total += 1
+
+    # YYYY-MM-DDTHH は lex 順 = カレンダー時間順のため sorted で十分。
+    by_hour = [{"hour": h, "count": counts[h]} for h in sorted(counts.keys())]
+    logger.info(
+        "by_hour requested: total=%d distinct_hours=%d (name=%s since=%s until=%s)",
+        total, len(by_hour), name, since, until,
+    )
+    return {
+        "total": total,
+        "distinct_hours": len(by_hour),
+        "by_hour": by_hour,
+    }
+
+
 @app.get("/api/v1/metrics/by_day")
 def metrics_by_day(
     name: Optional[str] = Query(
