@@ -1,6 +1,14 @@
 # PulseBoard
 
-[![CI](https://github.com/mohadayo/pulseboard-app/actions/workflows/ci.yml/badge.svg)](https://github.com/mohadayo/pulseboard-app/actions/workflows/ci.yml) [![actionlint](https://github.com/mohadayo/pulseboard-app/actions/workflows/actionlint.yml/badge.svg)](https://github.com/mohadayo/pulseboard-app/actions/workflows/actionlint.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Python](https://img.shields.io/badge/python-3.12+-3776ab.svg?logo=python&logoColor=white)](services/) [![Go](https://img.shields.io/badge/go-1.22+-00add8.svg?logo=go&logoColor=white)](services/) [![TypeScript](https://img.shields.io/badge/typescript-node%2022-3178c6.svg?logo=typescript&logoColor=white)](services/)
+[![CI](https://github.com/mohadayo/pulseboard-app/actions/workflows/ci.yml/badge.svg)](https://github.com/mohadayo/pulseboard-app/actions/workflows/ci.yml)
+[![actionlint](https://github.com/mohadayo/pulseboard-app/actions/workflows/actionlint.yml/badge.svg)](https://github.com/mohadayo/pulseboard-app/actions/workflows/actionlint.yml)
+[![CodeQL](https://github.com/mohadayo/pulseboard-app/actions/workflows/codeql.yml/badge.svg)](https://github.com/mohadayo/pulseboard-app/actions/workflows/codeql.yml)
+[![Dependency Review](https://github.com/mohadayo/pulseboard-app/actions/workflows/dependency-review.yml/badge.svg)](https://github.com/mohadayo/pulseboard-app/actions/workflows/dependency-review.yml)
+[![validate-cff](https://github.com/mohadayo/pulseboard-app/actions/workflows/validate-cff.yml/badge.svg)](https://github.com/mohadayo/pulseboard-app/actions/workflows/validate-cff.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.12+-3776ab.svg?logo=python&logoColor=white)](services/)
+[![Go](https://img.shields.io/badge/go-1.22+-00add8.svg?logo=go&logoColor=white)](services/)
+[![TypeScript](https://img.shields.io/badge/typescript-node%2022-3178c6.svg?logo=typescript&logoColor=white)](services/)
 
 Real-time metrics dashboard platform built with a microservices architecture. Collect, aggregate, and visualize system metrics through three specialized services.
 
@@ -189,7 +197,7 @@ The response includes `count`, `sum`, `avg`, `min`, `max`, `range` (= max − mi
 | `GET` | `/health` | Health check |
 | `POST` | `/api/v1/dashboard/metrics` | Add a dashboard metric |
 | `GET` | `/api/v1/dashboard/summary` | Get dashboard summary（既定で最新 50 件、`?limit=` で件数指定可） |
-| `GET` | `/api/v1/dashboard/metrics/names` | 保持中の distinct な metric 名一覧を `{name, count, latest_recorded_at}` 形式で昇順に返す。`?since=` / `?until=` (ISO8601) で `recorded_at` の範囲内に観測のある名前のみに絞り込み可能（フィルタドロップダウンの populate 用途） |
+| `GET` | `/api/v1/dashboard/metrics/names` | 保持中の distinct な metric 名一覧を `{name, count, latest_recorded_at}` 形式で昇順に返す。`?since=` / `?until=` (ISO8601) で `recorded_at` の範囲内に観測のある名前のみに絞り込み可能(フィルタドロップダウンの populate 用途) |
 | `GET` | `/api/v1/dashboard/metrics/count` | 保持中件数のみを返す軽量エンドポイント。`?name=` / `?since=` / `?until=` (ISO8601) で絞り込み。レスポンスは `{ total, by_name, name, since, until }` でレコード本体を含まない |
 | `GET` | `/api/v1/dashboard/metrics/{name}` | Get metrics by name |
 | `GET` | `/api/v1/dashboard/metrics/{name}/latest` | 指定 name の最新 1 件だけを返す軽量エンドポイント（リアルタイム表示・状態バッジ用、データ無しは `404`） |
