@@ -84,6 +84,7 @@ make down
 | `GET` | `/api/v1/metrics/{name}/stats` | Aggregate stats for a metric (count/min/max/sum/avg/variance/std_dev/cv/skewness/kurtosis/p50/p90/p95/p99/latest) |
 | `GET` | `/api/v1/metrics/names` | 保持中の distinct な metric 名一覧を `{name, count, latest_recorded_at}` 形式で `name` 昇順に返す（`?q=` で大文字小文字無視の部分一致絞り込み） |
 | `GET` | `/api/v1/metrics/count` | 保持中の総件数と `by_name` サマリーを返す軽量エンドポイント（`?since=` / `?until=` ISO 8601 で時間フィルタ） |
+| `GET` | `/api/v1/metrics/by_hour` | 保持中メトリクスを UTC 時間 (YYYY-MM-DDTHH) でビニングした時間次時系列カウント（`by_day` より細粒度。周期集計 `by_hour_of_day` と異なり日時を保ったまま時系列を返す。`?name=` / `?since=` / `?until=`） |
 | `GET` | `/api/v1/metrics/by_day` | 保持中メトリクスを UTC 日付 (YYYY-MM-DD) でビニングした日次時系列カウント（`?name=` / `?since=` / `?until=`） |
 | `GET` | `/api/v1/metrics/by_hour_of_day` | 保持中メトリクスを UTC 時刻 ("00"〜"23") でビニングした周期集計（`?name=` / `?since=` / `?until=`） |
 | `GET` | `/api/v1/metrics/by_week` | 保持中メトリクスを ISO 週 (YYYY-Www) でビニングした週次時系列カウント（`?name=` / `?since=` / `?until=`） |
